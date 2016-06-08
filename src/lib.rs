@@ -7,6 +7,8 @@ use std::ops;
 use std::fmt;
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use sat::solver::Solver;
+use sat::Literal;
 
 #[derive(Debug,PartialOrd,Ord,PartialEq,Eq,Clone)]
 pub enum Bools<V> {
@@ -21,7 +23,7 @@ pub type Env<V> = BTreeMap<V, bool>;
 #[derive(Debug)]
 pub struct CNF<V: Ord> {
     instance: sat::Instance,
-    vars: BTreeMap<V, sat::Literal>,
+    vars: BTreeMap<V, Literal>,
 }
 
 impl<V> Bools<V> {
@@ -63,71 +65,82 @@ impl<V: Ord> CNF<V> {
                      }]);
     }
 
-    fn assert<A: AsRef<[sat::Literal]> + fmt::Debug>(&mut self, s: A) {
-        info!("assert! {:?}", s);
+    fn assert<A: AsRef<[Literal]> + fmt::Debug>(&mut self, s: A) {
+        debug!("assert! {:?}", s);
         self.instance.assert_any(s.as_ref())
     }
-    fn assert_eq(&mut self, a: sat::Literal, b: sat::Literal) {
-        info!("assert! {:?} <-> {:?}", a, b);
+    fn assert_eq(&mut self, a: Literal, b: Literal) {
+        debug!("assert! {:?} <-> {:?}", a, b);
         self.assert([!a, b]);
         self.assert([a, !b]);
     }
 
-    fn assert_and(&mut self, it: sat::Literal, l: sat::Literal, r: sat::Literal) {
-        info!("assert! {:?} <-> {:?} /\\ {:?}", it, l, r);
+    fn assert_and(&mut self, it: Literal, l: Literal, r: Literal) {
+        debug!("assert! {:?} <-> {:?} /\\ {:?}", it, l, r);
         self.assert([!l, !r, it]);
         self.assert([l, !it]);
         self.assert([r, !it]);
     }
-    fn assert_or(&mut self, it: sat::Literal, l: sat::Literal, r: sat::Literal) {
-        info!("assert! {:?} <-> {:?} \\/ {:?}", it, l, r);
+    fn assert_or(&mut self, it: Literal, l: Literal, r: Literal) {
+        debug!("assert! {:?} <-> {:?} \\/ {:?}", it, l, r);
         self.assert([l, r, !it]);
         self.assert([!l, it]);
         self.assert([!r, it]);
     }
-    fn var(&mut self, var: V) -> sat::Literal {
+    fn var(&mut self, var: V) -> Literal {
         let &mut CNF { ref mut instance, ref mut vars } = self;
         vars.entry(var).or_insert_with(|| instance.fresh_var()).clone()
+    }
+
+
+    pub fn solve_with(&self, s: &Solver) -> Option<sat::Assignment> {
+        s.solve(&self.instance)
+    }
+    pub fn get(&self, assign: &sat::Assignment, var: &V) -> Option<bool> {
+        self.vars.get(var).map(|l| assign.get(l.clone()))
     }
 }
 
 impl<V: Ord + Clone + fmt::Debug> Bools<V> {
-    pub fn to_cnf(&self, env: &Env<V>) -> (sat::Literal, CNF<V>) {
+    pub fn to_cnf(&self, env: &Env<V>) -> CNF<V> {
         let mut cnf = CNF::new();
         for (k, v) in env.iter() {
             cnf.assert_var(k.clone(), *v);
         }
-        let top = self.to_cnf_inner(&mut cnf);
+        let _ = self.to_cnf_inner(&mut cnf);
         debug!("var -> Literal: {:#?}", cnf);
-        debug!("formula: {:?} -> top:{:?}", self, top);
-        (top, cnf)
+        cnf
     }
 
-    fn to_cnf_inner(&self, cnf: &mut CNF<V>) -> sat::Literal {
-        let self_var = cnf.instance.fresh_var();
-        debug!("subclause: {:?} <-> {:?}", self, self_var);
+    fn to_cnf_inner(&self, cnf: &mut CNF<V>) -> Literal {
+        debug!("subclause: {:?}", self);
 
         match self {
             &Bools::Lit(ref id) => {
                 let it = cnf.var(id.clone());
-                cnf.assert_eq(self_var, it.clone());
+                it.clone()
             }
             &Bools::Not(ref a) => {
+                let self_var = cnf.instance.fresh_var();
                 let it = a.to_cnf_inner(cnf);
                 cnf.assert_eq(self_var, !it);
+                self_var
             }
             &Bools::And(ref l, ref r) => {
+                let self_var = cnf.instance.fresh_var();
                 let a = l.to_cnf_inner(cnf);
                 let b = r.to_cnf_inner(cnf);
                 cnf.assert_and(self_var, a, b);
+                self_var
             }
             &Bools::Or(ref l, ref r) => {
+                let self_var = cnf.instance.fresh_var();
                 let a = l.to_cnf_inner(cnf);
                 let b = r.to_cnf_inner(cnf);
                 cnf.assert_or(self_var, a, b);
+                self_var
             }
         }
-        self_var
     }
 }
 
@@ -169,7 +182,6 @@ mod tests {
     use super::{Bools, Env};
     use self::quickcheck::{Gen, Arbitrary, TestResult};
     use std::iter;
-    use sat::solver::Solver;
     use std::sync::Arc;
 
     type Var = u8;
@@ -325,18 +337,36 @@ mod tests {
     fn verify_cnf_prop(input: Bools<Var>, env: Env<Var>) -> TestResult {
         use std::process::Command;
         if let Some(val) = input.eval(&env) {
+            let top_var = ::std::u8::MAX;
+            if env.contains_key(&top_var) {
+                return TestResult::discard();
+            }
+
             info!("verify_cnf_prop: {:?} / {:?} => {:?}", input, env, val);
-            let (top, cnf) = input.to_cnf(&env);
-            let s = sat::solver::Dimacs::new(|| Command::new("minisat"));
+
+            let satisfiable = Bools::var(top_var).is(input.clone());
+            info!("{:?} <-> {:?} => {:?}", top_var, input, satisfiable);
+            let cnf = satisfiable.to_cnf(&env);
+            let s = sat::solver::Dimacs::new(|| {
+                let mut c = Command::new("minisat");
+                c.arg("-verb=0");
+                c
+            });
             debug!("cnf: {:?}", {
                 let mut out = Vec::new();
                 s.write_instance(&mut out, &cnf.instance);
                 String::from_utf8(out)
             });
 
-            if let Some(solution) = s.solve(&cnf.instance) {
-                let okay = solution.get(top) == val;
-                debug!("Solution okay? {:?}: {:?}", okay, solution);
+            if let Some(solution) = cnf.solve_with(&s) {
+                let eval_res = cnf.get(&solution, &top_var);
+                let okay = eval_res == Some(val);
+                debug!("Solution okay? {:?}: top: {:?} -> {:?}; expected: {:?}; from: {:?}",
+                       okay,
+                       top_var,
+                       eval_res,
+                       val,
+                       solution);
                 TestResult::from_bool(okay)
             } else {
                 debug!("No solution found");
