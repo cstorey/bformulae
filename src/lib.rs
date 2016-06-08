@@ -6,13 +6,14 @@ extern crate sat;
 use std::ops;
 use std::fmt;
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 #[derive(Debug,PartialOrd,Ord,PartialEq,Eq,Clone)]
 pub enum Bools<V> {
     Lit(V),
-    And(Box<Bools<V>>, Box<Bools<V>>),
-    Or(Box<Bools<V>>, Box<Bools<V>>),
-    Not(Box<Bools<V>>),
+    And(Arc<Bools<V>>, Arc<Bools<V>>),
+    Or(Arc<Bools<V>>, Arc<Bools<V>>),
+    Not(Arc<Bools<V>>),
 }
 
 pub type Env<V> = BTreeMap<V, bool>;
@@ -133,21 +134,21 @@ impl<V: Ord + Clone + fmt::Debug> Bools<V> {
 impl<V> ops::BitOr for Bools<V> {
     type Output = Self;
     fn bitor(self, other: Self) -> Self {
-        Bools::Or(Box::new(self), Box::new(other))
+        Bools::Or(Arc::new(self), Arc::new(other))
     }
 }
 
 impl<V> ops::BitAnd for Bools<V> {
     type Output = Self;
     fn bitand(self, other: Self) -> Self {
-        Bools::And(Box::new(self), Box::new(other))
+        Bools::And(Arc::new(self), Arc::new(other))
     }
 }
 
 impl<V> ops::Not for Bools<V> {
     type Output = Self;
     fn not(self) -> Self {
-        Bools::Not(Box::new(self))
+        Bools::Not(Arc::new(self))
     }
 }
 
@@ -169,6 +170,7 @@ mod tests {
     use self::quickcheck::{Gen, Arbitrary, TestResult};
     use std::iter;
     use sat::solver::Solver;
+    use std::sync::Arc;
 
     type Var = u8;
 
@@ -177,7 +179,7 @@ mod tests {
     {
         gen: &'a mut G,
         iota: usize,
-        thunk: Option<Box<Fn(&'a mut G) -> T>>,
+        thunk: Option<Arc<Fn(&'a mut G) -> T>>,
     }
 
     impl<'a, G: rand::Rng, T> Sampler<'a, G, T> {
@@ -196,7 +198,7 @@ mod tests {
                    .map(|i| 1 + iota + i)
                    .map(|i| self.gen.gen_range(0, i))
                    .any(|p| p <= 1) {
-                self.thunk = Some(Box::new(f) as Box<Fn(&mut G) -> T>)
+                self.thunk = Some(Arc::new(f) as Arc<Fn(&mut G) -> T>)
             }
             self.iota += weight;
             self
@@ -207,7 +209,7 @@ mod tests {
         }
     }
 
-    impl<T: Arbitrary> Arbitrary for Bools<T> {
+    impl<T: Arbitrary + Sync> Arbitrary for Bools<T> {
         fn arbitrary<G: Gen>(g: &mut G) -> Bools<T> {
             Sampler::new(g)
                 .weighted(10, |g: &mut G| Bools::var(Arbitrary::arbitrary(g)))
