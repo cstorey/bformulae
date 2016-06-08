@@ -4,26 +4,30 @@ use std::ops;
 use std::collections::BTreeMap;
 
 #[derive(Debug,PartialOrd,Ord,PartialEq,Eq,Clone)]
-pub enum Bools {
-    Lit(usize),
-    And(Box<Bools>, Box<Bools>),
-    Or(Box<Bools>, Box<Bools>),
-    Not(Box<Bools>),
+pub enum Bools<V> {
+    Lit(V),
+    And(Box<Bools<V>>, Box<Bools<V>>),
+    Or(Box<Bools<V>>, Box<Bools<V>>),
+    Not(Box<Bools<V>>),
 }
 
-pub type Env = BTreeMap<usize, bool>;
+pub type Env<V> = BTreeMap<V, bool>;
 
-impl Bools {
-    pub fn var(id: usize) -> Bools {
+impl<V> Bools<V> {
+    pub fn var(id: V) -> Bools<V> {
         Bools::Lit(id)
     }
-
-    pub fn is(self, rhs: Bools) -> Bools {
+}
+impl<V: Clone> Bools<V> {
+    pub fn is(self, rhs: Bools<V>) -> Bools<V> {
         !(self ^ rhs)
     }
-    pub fn eval(&self, env: &Env) -> Option<bool> {
+}
+
+impl<V: Ord> Bools<V> {
+    pub fn eval(&self, env: &Env<V>) -> Option<bool> {
         match self {
-            &Bools::Lit(id) => env.get(&id).map(|x| *x),
+            &Bools::Lit(ref id) => env.get(id).map(|x| *x),
             &Bools::And(ref a, ref b) => a.eval(env).and_then(|a| b.eval(env).map(|b| a & b)),
             &Bools::Or(ref a, ref b) => a.eval(env).and_then(|a| b.eval(env).map(|b| a | b)),
             &Bools::Not(ref a) => a.eval(env).map(|a| !a),
@@ -31,28 +35,28 @@ impl Bools {
     }
 }
 
-impl ops::BitOr for Bools {
+impl<V> ops::BitOr for Bools<V> {
     type Output = Self;
     fn bitor(self, other: Self) -> Self {
         Bools::Or(Box::new(self), Box::new(other))
     }
 }
 
-impl ops::BitAnd for Bools {
+impl<V> ops::BitAnd for Bools<V> {
     type Output = Self;
     fn bitand(self, other: Self) -> Self {
         Bools::And(Box::new(self), Box::new(other))
     }
 }
 
-impl ops::Not for Bools {
+impl<V> ops::Not for Bools<V> {
     type Output = Self;
     fn not(self) -> Self {
         Bools::Not(Box::new(self))
     }
 }
 
-impl ops::BitXor for Bools {
+impl<V: Clone> ops::BitXor for Bools<V> {
     type Output = Self;
     fn bitxor(self, other: Self) -> Self {
         (self.clone() | other.clone()) & !(self & other)
@@ -67,6 +71,8 @@ mod tests {
     use super::{Bools, Env};
     use self::quickcheck::{Gen, Arbitrary};
     use std::iter;
+
+    type Var = u8;
 
     struct Sampler<'a, G, T>
         where G: 'a
@@ -103,8 +109,8 @@ mod tests {
         }
     }
 
-    impl Arbitrary for Bools {
-        fn arbitrary<G: Gen>(g: &mut G) -> Bools {
+    impl<T: Arbitrary> Arbitrary for Bools<T> {
+        fn arbitrary<G: Gen>(g: &mut G) -> Bools<T> {
             Sampler::new(g)
                 .weighted(10, |g: &mut G| Bools::var(Arbitrary::arbitrary(g)))
                 .weighted(1, |g: &mut G| !Bools::arbitrary(g))
@@ -116,7 +122,7 @@ mod tests {
         }
         fn shrink(&self) -> Box<Iterator<Item = Self> + 'static> {
             match self {
-                &Bools::Lit(n) => Box::new(n.shrink().map(Bools::Lit)),
+                &Bools::Lit(ref n) => Box::new(n.shrink().map(Bools::Lit)),
                 &Bools::Not(ref it) => Box::new(iter::once((&**it).clone())),
                 &Bools::And(ref l, ref r) => {
                     Box::new(iter::once((&**l).clone()).chain(iter::once((&**r).clone())))
@@ -128,16 +134,16 @@ mod tests {
         }
     }
 
-    fn verify_not_prop(input: Bools, env: Env) -> bool {
+    fn verify_not_prop(input: Bools<Var>, env: Env<Var>) -> bool {
         (!input.clone()).eval(&env) == input.eval(&env).map(|r| !r)
     }
 
     #[test]
     fn verify_not() {
-        quickcheck::quickcheck(verify_not_prop as fn(Bools, Env) -> bool);
+        quickcheck::quickcheck(verify_not_prop as fn(Bools<Var>, Env<Var>) -> bool);
     }
 
-    fn verify_and_prop(left: Bools, right: Bools, env: Env) -> bool {
+    fn verify_and_prop(left: Bools<Var>, right: Bools<Var>, env: Env<Var>) -> bool {
         let expected = if let (Some(a), Some(b)) = (left.clone().eval(&env),
                                                     right.clone().eval(&env)) {
             Some(a & b)
@@ -149,10 +155,10 @@ mod tests {
 
     #[test]
     fn verify_and() {
-        quickcheck::quickcheck(verify_and_prop as fn(Bools, Bools, Env) -> bool);
+        quickcheck::quickcheck(verify_and_prop as fn(Bools<Var>, Bools<Var>, Env<Var>) -> bool);
     }
 
-    fn verify_or_prop(left: Bools, right: Bools, env: Env) -> bool {
+    fn verify_or_prop(left: Bools<Var>, right: Bools<Var>, env: Env<Var>) -> bool {
         let expected = if let (Some(a), Some(b)) = (left.clone().eval(&env),
                                                     right.clone().eval(&env)) {
             Some(a | b)
@@ -164,10 +170,10 @@ mod tests {
 
     #[test]
     fn verify_or() {
-        quickcheck::quickcheck(verify_or_prop as fn(Bools, Bools, Env) -> bool);
+        quickcheck::quickcheck(verify_or_prop as fn(Bools<Var>, Bools<Var>, Env<Var>) -> bool);
     }
 
-    fn verify_xor_prop(left: Bools, right: Bools, env: Env) -> bool {
+    fn verify_xor_prop(left: Bools<Var>, right: Bools<Var>, env: Env<Var>) -> bool {
         let expected = if let (Some(a), Some(b)) = (left.clone().eval(&env),
                                                     right.clone().eval(&env)) {
             Some(a ^ b)
@@ -179,10 +185,10 @@ mod tests {
 
     #[test]
     fn verify_xor() {
-        quickcheck::quickcheck(verify_xor_prop as fn(Bools, Bools, Env) -> bool);
+        quickcheck::quickcheck(verify_xor_prop as fn(Bools<Var>, Bools<Var>, Env<Var>) -> bool);
     }
 
-    fn verify_is_prop(left: Bools, right: Bools, env: Env) -> bool {
+    fn verify_is_prop(left: Bools<Var>, right: Bools<Var>, env: Env<Var>) -> bool {
         let expected = if let (Some(a), Some(b)) = (left.clone().eval(&env),
                                                     right.clone().eval(&env)) {
             Some(a == b)
@@ -194,7 +200,7 @@ mod tests {
 
     #[test]
     fn verify_is() {
-        quickcheck::quickcheck(verify_is_prop as fn(Bools, Bools, Env) -> bool);
+        quickcheck::quickcheck(verify_is_prop as fn(Bools<Var>, Bools<Var>, Env<Var>) -> bool);
     }
 
 
