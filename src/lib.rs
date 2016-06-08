@@ -3,12 +3,6 @@ extern crate maplit;
 use std::ops::{BitOr, BitAnd, Not};
 use std::collections::BTreeMap;
 
-trait Booleans {
-    type Env;
-    fn var(usize) -> Self;
-    fn eval(&self, &Self::Env) -> Option<bool>;
-}
-
 #[derive(Debug,PartialOrd,Ord,PartialEq,Eq,Clone)]
 pub enum Bools {
     Lit(usize),
@@ -17,12 +11,13 @@ pub enum Bools {
     Not(Box<Bools>),
 }
 
-impl Booleans for Bools {
-    type Env = BTreeMap<usize, bool>;
+type Env = BTreeMap<usize, bool>;
+
+impl Bools {
     fn var(id: usize) -> Bools {
         Bools::Lit(id)
     }
-    fn eval(&self, env: &Self::Env) -> Option<bool> {
+    fn eval(&self, env: &Env) -> Option<bool> {
         match self {
             &Bools::Lit(id) => env.get(&id).map(|x| *x),
             &Bools::And(ref a, ref b) => a.eval(env).and_then(|a| b.eval(env).map(|b| a & b)),
@@ -55,7 +50,7 @@ impl Not for Bools {
 
 #[cfg(test)]
 mod tests {
-    use super::{Booleans, Bools};
+    use super::Bools;
     #[test]
     fn it_works() {
         let x1 = Bools::var(0);
@@ -65,6 +60,6 @@ mod tests {
 
         let env = btreemap!{0 => true, 1 => false, 2 => true};
         assert_eq!(c.eval(&env), Some(true));
-        assert_eq!(c.eval(&btreemap!{}), None);
+        assert_eq!(c.eval(&btreemap![]), None);
     }
 }
