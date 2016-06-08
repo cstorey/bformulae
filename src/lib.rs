@@ -212,10 +212,12 @@ mod tests {
     impl<T: Arbitrary + Sync> Arbitrary for Bools<T> {
         fn arbitrary<G: Gen>(g: &mut G) -> Bools<T> {
             Sampler::new(g)
-                .weighted(10, |g: &mut G| Bools::var(Arbitrary::arbitrary(g)))
+                .weighted(15, |g: &mut G| Bools::var(Arbitrary::arbitrary(g)))
                 .weighted(1, |g: &mut G| !Bools::arbitrary(g))
                 .weighted(1, |g: &mut G| Bools::arbitrary(g) & Bools::arbitrary(g))
                 .weighted(1, |g: &mut G| Bools::arbitrary(g) | Bools::arbitrary(g))
+                .weighted(1, |g: &mut G| Bools::arbitrary(g) ^ Bools::arbitrary(g))
+                .weighted(1, |g: &mut G| Bools::arbitrary(g).is(Bools::arbitrary(g)))
                 .finish()
                 .unwrap()
         }
@@ -244,6 +246,7 @@ mod tests {
     }
 
     fn verify_and_prop(left: Bools<Var>, right: Bools<Var>, env: Env<Var>) -> bool {
+        trace!("verify_and_prop: {:?} & {:?} / {:?}", left, right, env);
         let expected = if let (Some(a), Some(b)) = (left.clone().eval(&env),
                                                     right.clone().eval(&env)) {
             Some(a & b)
@@ -259,6 +262,7 @@ mod tests {
     }
 
     fn verify_or_prop(left: Bools<Var>, right: Bools<Var>, env: Env<Var>) -> bool {
+        trace!("verify_and_prop: {:?} | {:?} / {:?}", left, right, env);
         let expected = if let (Some(a), Some(b)) = (left.clone().eval(&env),
                                                     right.clone().eval(&env)) {
             Some(a | b)
@@ -274,6 +278,7 @@ mod tests {
     }
 
     fn verify_xor_prop(left: Bools<Var>, right: Bools<Var>, env: Env<Var>) -> bool {
+        trace!("verify_and_prop: {:?} ^ {:?} / {:?}", left, right, env);
         let expected = if let (Some(a), Some(b)) = (left.clone().eval(&env),
                                                     right.clone().eval(&env)) {
             Some(a ^ b)
@@ -289,6 +294,7 @@ mod tests {
     }
 
     fn verify_is_prop(left: Bools<Var>, right: Bools<Var>, env: Env<Var>) -> bool {
+        trace!("verify_and_prop: {:?} <-> {:?} / {:?}", left, right, env);
         let expected = if let (Some(a), Some(b)) = (left.clone().eval(&env),
                                                     right.clone().eval(&env)) {
             Some(a == b)
