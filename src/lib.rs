@@ -1,6 +1,6 @@
 #[macro_use]
 extern crate maplit;
-use std::ops::{BitOr, BitAnd, Not};
+use std::ops;
 use std::collections::BTreeMap;
 
 #[derive(Debug,PartialOrd,Ord,PartialEq,Eq,Clone)]
@@ -17,6 +17,7 @@ impl Bools {
     pub fn var(id: usize) -> Bools {
         Bools::Lit(id)
     }
+
     pub fn eval(&self, env: &Env) -> Option<bool> {
         match self {
             &Bools::Lit(id) => env.get(&id).map(|x| *x),
@@ -27,24 +28,31 @@ impl Bools {
     }
 }
 
-impl BitOr for Bools {
+impl ops::BitOr for Bools {
     type Output = Self;
     fn bitor(self, other: Self) -> Self {
         Bools::Or(Box::new(self), Box::new(other))
     }
 }
 
-impl BitAnd for Bools {
+impl ops::BitAnd for Bools {
     type Output = Self;
     fn bitand(self, other: Self) -> Self {
         Bools::And(Box::new(self), Box::new(other))
     }
 }
 
-impl Not for Bools {
+impl ops::Not for Bools {
     type Output = Self;
     fn not(self) -> Self {
         Bools::Not(Box::new(self))
+    }
+}
+
+impl ops::BitXor for Bools {
+    type Output = Self;
+    fn bitxor(self, other: Self) -> Self {
+        (self.clone() | other.clone()) & !(self & other)
     }
 }
 
@@ -154,6 +162,21 @@ mod tests {
     #[test]
     fn verify_or() {
         quickcheck::quickcheck(verify_or_prop as fn(Bools, Bools, Env) -> bool);
+    }
+
+    fn verify_xor_prop(left: Bools, right: Bools, env: Env) -> bool {
+        let expected = if let (Some(a), Some(b)) = (left.clone().eval(&env),
+                                                    right.clone().eval(&env)) {
+            Some(a ^ b)
+        } else {
+            None
+        };
+        (left ^ right).eval(&env) == expected
+    }
+
+    #[test]
+    fn verify_xor() {
+        quickcheck::quickcheck(verify_xor_prop as fn(Bools, Bools, Env) -> bool);
     }
 
 
