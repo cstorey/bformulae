@@ -1,6 +1,10 @@
 #[macro_use]
 extern crate maplit;
+#[macro_use]
+extern crate log;
+extern crate sat;
 use std::ops;
+use std::fmt;
 use std::collections::BTreeMap;
 
 #[derive(Debug,PartialOrd,Ord,PartialEq,Eq,Clone)]
@@ -12,6 +16,12 @@ pub enum Bools<V> {
 }
 
 pub type Env<V> = BTreeMap<V, bool>;
+
+#[derive(Debug)]
+pub struct CNF<V: Ord> {
+    instance: sat::Instance,
+    vars: BTreeMap<V, sat::Literal>,
+}
 
 impl<V> Bools<V> {
     pub fn var(id: V) -> Bools<V> {
@@ -32,6 +42,91 @@ impl<V: Ord> Bools<V> {
             &Bools::Or(ref a, ref b) => a.eval(env).and_then(|a| b.eval(env).map(|b| a | b)),
             &Bools::Not(ref a) => a.eval(env).map(|a| !a),
         }
+    }
+}
+
+impl<V: Ord> CNF<V> {
+    fn new() -> CNF<V> {
+        CNF {
+            instance: sat::Instance::new(),
+            vars: BTreeMap::new(),
+        }
+    }
+
+    fn assert_var(&mut self, var: V, val: bool) {
+        let var = self.var(var);
+        self.assert([if val {
+                         var
+                     } else {
+                         !var
+                     }]);
+    }
+
+    fn assert<A: AsRef<[sat::Literal]> + fmt::Debug>(&mut self, s: A) {
+        info!("assert! {:?}", s);
+        self.instance.assert_any(s.as_ref())
+    }
+    fn assert_eq(&mut self, a: sat::Literal, b: sat::Literal) {
+        info!("assert! {:?} <-> {:?}", a, b);
+        self.assert([!a, b]);
+        self.assert([a, !b]);
+    }
+
+    fn assert_and(&mut self, it: sat::Literal, l: sat::Literal, r: sat::Literal) {
+        info!("assert! {:?} <-> {:?} /\\ {:?}", it, l, r);
+        self.assert([!l, !r, it]);
+        self.assert([l, !it]);
+        self.assert([r, !it]);
+    }
+    fn assert_or(&mut self, it: sat::Literal, l: sat::Literal, r: sat::Literal) {
+        info!("assert! {:?} <-> {:?} \\/ {:?}", it, l, r);
+        self.assert([l, r, !it]);
+        self.assert([!l, it]);
+        self.assert([!r, it]);
+    }
+    fn var(&mut self, var: V) -> sat::Literal {
+        let &mut CNF { ref mut instance, ref mut vars } = self;
+        vars.entry(var).or_insert_with(|| instance.fresh_var()).clone()
+    }
+}
+
+impl<V: Ord + Clone + fmt::Debug> Bools<V> {
+    pub fn to_cnf(&self, env: &Env<V>) -> (sat::Literal, CNF<V>) {
+        let mut cnf = CNF::new();
+        for (k, v) in env.iter() {
+            cnf.assert_var(k.clone(), *v);
+        }
+        let top = self.to_cnf_inner(&mut cnf);
+        debug!("var -> Literal: {:#?}", cnf);
+        debug!("formula: {:?} -> top:{:?}", self, top);
+        (top, cnf)
+    }
+
+    fn to_cnf_inner(&self, cnf: &mut CNF<V>) -> sat::Literal {
+        let self_var = cnf.instance.fresh_var();
+        debug!("subclause: {:?} <-> {:?}", self, self_var);
+
+        match self {
+            &Bools::Lit(ref id) => {
+                let it = cnf.var(id.clone());
+                cnf.assert_eq(self_var, it.clone());
+            }
+            &Bools::Not(ref a) => {
+                let it = a.to_cnf_inner(cnf);
+                cnf.assert_eq(self_var, !it);
+            }
+            &Bools::And(ref l, ref r) => {
+                let a = l.to_cnf_inner(cnf);
+                let b = r.to_cnf_inner(cnf);
+                cnf.assert_and(self_var, a, b);
+            }
+            &Bools::Or(ref l, ref r) => {
+                let a = l.to_cnf_inner(cnf);
+                let b = r.to_cnf_inner(cnf);
+                cnf.assert_or(self_var, a, b);
+            }
+        }
+        self_var
     }
 }
 
@@ -67,10 +162,13 @@ impl<V: Clone> ops::BitXor for Bools<V> {
 mod tests {
     extern crate quickcheck;
     extern crate rand;
+    extern crate env_logger;
+    use sat;
     use self::rand::Rng;
     use super::{Bools, Env};
-    use self::quickcheck::{Gen, Arbitrary};
+    use self::quickcheck::{Gen, Arbitrary, TestResult};
     use std::iter;
+    use sat::solver::Solver;
 
     type Var = u8;
 
@@ -118,8 +216,8 @@ mod tests {
                 .weighted(1, |g: &mut G| Bools::arbitrary(g) | Bools::arbitrary(g))
                 .finish()
                 .unwrap()
-
         }
+
         fn shrink(&self) -> Box<Iterator<Item = Self> + 'static> {
             match self {
                 &Bools::Lit(ref n) => Box::new(n.shrink().map(Bools::Lit)),
@@ -214,5 +312,36 @@ mod tests {
         let env = btreemap!{0 => true, 1 => false, 2 => true};
         assert_eq!(c.eval(&env), Some(true));
         assert_eq!(c.eval(&btreemap![]), None);
+    }
+
+    fn verify_cnf_prop(input: Bools<Var>, env: Env<Var>) -> TestResult {
+        use std::process::Command;
+        if let Some(val) = input.eval(&env) {
+            info!("verify_cnf_prop: {:?} / {:?} => {:?}", input, env, val);
+            let (top, cnf) = input.to_cnf(&env);
+            let s = sat::solver::Dimacs::new(|| Command::new("minisat"));
+            debug!("cnf: {:?}", {
+                let mut out = Vec::new();
+                s.write_instance(&mut out, &cnf.instance);
+                String::from_utf8(out)
+            });
+
+            if let Some(solution) = s.solve(&cnf.instance) {
+                let okay = solution.get(top) == val;
+                debug!("Solution okay? {:?}: {:?}", okay, solution);
+                TestResult::from_bool(okay)
+            } else {
+                debug!("No solution found");
+                TestResult::failed()
+            }
+        } else {
+            TestResult::discard()
+        }
+    }
+
+    #[test]
+    fn verify_cnf() {
+        env_logger::init().unwrap_or(());
+        quickcheck::quickcheck(verify_cnf_prop as fn(Bools<Var>, Env<Var>) -> TestResult);
     }
 }
