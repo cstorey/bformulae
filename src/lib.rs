@@ -18,6 +18,9 @@ impl Bools {
         Bools::Lit(id)
     }
 
+    pub fn is(self, rhs: Bools) -> Bools {
+        !(self ^ rhs)
+    }
     pub fn eval(&self, env: &Env) -> Option<bool> {
         match self {
             &Bools::Lit(id) => env.get(&id).map(|x| *x),
@@ -177,6 +180,21 @@ mod tests {
     #[test]
     fn verify_xor() {
         quickcheck::quickcheck(verify_xor_prop as fn(Bools, Bools, Env) -> bool);
+    }
+
+    fn verify_is_prop(left: Bools, right: Bools, env: Env) -> bool {
+        let expected = if let (Some(a), Some(b)) = (left.clone().eval(&env),
+                                                    right.clone().eval(&env)) {
+            Some(a == b)
+        } else {
+            None
+        };
+        (left.is(right)).eval(&env) == expected
+    }
+
+    #[test]
+    fn verify_is() {
+        quickcheck::quickcheck(verify_is_prop as fn(Bools, Bools, Env) -> bool);
     }
 
 
