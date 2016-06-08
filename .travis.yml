@@ -2,6 +2,13 @@ language: rust
 sudo: false
 language: rust
 
+addons:
+  apt:
+    sources:
+    - ubuntu-toolchain-r-test
+    packages:
+    - minisat
+
 rust:
 - stable
 - beta
