@@ -5,3 +5,7 @@ version = "0.1.0"
 
 [dependencies]
 maplit = "0.1.3"
+
+[dev-dependencies]
+quickcheck = "0.2.27"
+rand = "0.3.14"
