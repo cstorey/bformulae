@@ -5,7 +5,7 @@ extern crate log;
 extern crate sat;
 use std::ops;
 use std::fmt;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use sat::solver::Solver;
 use sat::Literal;
@@ -22,7 +22,7 @@ pub type Env<V> = BTreeMap<V, bool>;
 
 #[derive(Debug)]
 pub struct CNF<V: Ord> {
-    instance: sat::Instance,
+    pub instance: sat::Instance,
     vars: BTreeMap<V, Literal>,
 }
 
@@ -48,7 +48,20 @@ impl<V: Ord> Bools<V> {
     }
 }
 
-impl<V: Ord> CNF<V> {
+impl<V: fmt::Display> fmt::Display for Bools<V> {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            &Bools::Lit(ref id) => write!(fmt, "{}", id),
+            &Bools::And(ref a, ref b) => write!(fmt, "({} & {})", a, b),
+            &Bools::Or(ref a, ref b) => write!(fmt, "({} | {})", a, b),
+            &Bools::Not(ref a) => write!(fmt, "!{}", a),
+        }
+    }
+}
+
+
+
+impl<V: Ord + Clone> CNF<V> {
     fn new() -> CNF<V> {
         CNF {
             instance: sat::Instance::new(),
@@ -96,6 +109,31 @@ impl<V: Ord> CNF<V> {
     pub fn solve_with(&self, s: &Solver) -> Option<sat::Assignment> {
         s.solve(&self.instance)
     }
+
+    pub fn next_solution(&mut self, s: &Solver) -> Option<BTreeMap<V, bool>> {
+        if let Some(s) = s.solve(&self.instance) {
+            let clause = self.vars
+                             .values()
+                             .map(|l| {
+                                 if s.get(*l) {
+                                     !l.clone()
+                                 } else {
+                                     l.clone()
+                                 }
+                             })
+                             .collect::<Vec<_>>();
+            debug!("Negation clause: {:?}", clause);
+            self.instance.assert_any(clause.iter());
+
+            let res = self.vars.iter().map(|(v, l)| (v.clone(), s.get(*l))).collect();
+            Some(res)
+        } else {
+            None
+        }
+    }
+
+
+
     pub fn get(&self, assign: &sat::Assignment, var: &V) -> Option<bool> {
         self.vars.get(var).map(|l| assign.get(l.clone()))
     }
@@ -181,8 +219,10 @@ mod tests {
     use self::rand::Rng;
     use super::{Bools, Env};
     use self::quickcheck::{Gen, Arbitrary, TestResult};
+    use std::collections::{BTreeSet, BTreeMap};
     use std::iter;
     use std::sync::Arc;
+    use std::process::Command;
 
     type Var = u8;
 
@@ -335,7 +375,6 @@ mod tests {
     }
 
     fn verify_cnf_prop(input: Bools<Var>, env: Env<Var>) -> TestResult {
-        use std::process::Command;
         if let Some(val) = input.eval(&env) {
             let top_var = ::std::u8::MAX;
             if env.contains_key(&top_var) {
@@ -381,5 +420,45 @@ mod tests {
     fn verify_cnf() {
         env_logger::init().unwrap_or(());
         quickcheck::quickcheck(verify_cnf_prop as fn(Bools<Var>, Env<Var>) -> TestResult);
+    }
+
+    #[test]
+    fn should_iter_examples() {
+        let vars = [0, 1];
+        let mut f = vars.iter()
+                        .map(|&v| Bools::var(v))
+                        .fold(None,
+                              |acc, x| Some(acc.map(|acc| acc & x.clone()).unwrap_or(x)))
+                        .expect("formula");
+
+        let s = sat::solver::Dimacs::new(|| {
+            let mut c = Command::new("minisat");
+            c.arg("-verb=0");
+            c
+        });
+
+        println!("Formula: {}", f);
+        let mut cnf = (!f.clone()).to_cnf(&btreemap![]);
+
+        println!("cnf: {}", {
+            let mut out = Vec::new();
+            s.write_instance(&mut out, &cnf.instance);
+            String::from_utf8(out).unwrap_or("".to_string())
+        });
+
+        let mut solutions = BTreeSet::new();
+        while let Some(soln) = cnf.next_solution(&s) {
+            println!("solution: {:?}", soln);
+            solutions.insert(soln);
+        }
+
+        assert_eq!(solutions,
+                   btreeset! {
+            btreemap!{0 => false, 1 => false},
+            btreemap!{0 => false, 1 => true},
+            btreemap!{0 => true, 1 => false},
+            btreemap!{0 => true, 1 => true},
+        });
+
     }
 }
