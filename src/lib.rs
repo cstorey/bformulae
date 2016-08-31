@@ -298,7 +298,8 @@ mod tests {
                 .weighted(1, |g: &mut G| Bools::arbitrary(g) | Bools::arbitrary(g))
                 .weighted(1, |g: &mut G| Bools::arbitrary(g) ^ Bools::arbitrary(g))
                 .weighted(1, |g: &mut G| Bools::arbitrary(g).is(Bools::arbitrary(g)))
-                .weighted(1, |g: &mut G| Bools::arbitrary(g).implies(Bools::arbitrary(g)))
+                .weighted(1,
+                          |g: &mut G| Bools::arbitrary(g).implies(Bools::arbitrary(g)))
                 .finish()
                 .unwrap()
         }
@@ -307,18 +308,10 @@ mod tests {
             match self {
                 &Bools::Lit(ref n) => Box::new(n.shrink().map(Bools::Lit)),
                 &Bools::Not(ref it) => Box::new(iter::once((&**it).clone())),
-                &Bools::And(ref l, ref r) => {
-                    Box::new(iter::once((&**l).clone()).chain(iter::once((&**r).clone())))
-                }
-                &Bools::Or(ref l, ref r) => {
-                    Box::new(iter::once((&**l).clone()).chain(iter::once((&**r).clone())))
-                }
-                &Bools::Xor(ref l, ref r) => {
-                    Box::new(iter::once((&**l).clone()).chain(iter::once((&**r).clone())))
-                }
-                &Bools::Eq(ref l, ref r) => {
-                    Box::new(iter::once((&**l).clone()).chain(iter::once((&**r).clone())))
-                }
+                &Bools::And(ref l, ref r) |
+                &Bools::Or(ref l, ref r) |
+                &Bools::Xor(ref l, ref r) |
+                &Bools::Eq(ref l, ref r) |
                 &Bools::Implies(ref l, ref r) => {
                     Box::new(iter::once((&**l).clone()).chain(iter::once((&**r).clone())))
                 }
