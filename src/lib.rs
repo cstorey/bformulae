@@ -15,7 +15,10 @@ pub enum Bools<V> {
     Lit(V),
     And(Arc<Bools<V>>, Arc<Bools<V>>),
     Or(Arc<Bools<V>>, Arc<Bools<V>>),
+    Xor(Arc<Bools<V>>, Arc<Bools<V>>),
     Not(Arc<Bools<V>>),
+    Eq(Arc<Bools<V>>, Arc<Bools<V>>),
+    Implies(Arc<Bools<V>>, Arc<Bools<V>>),
 }
 
 pub type Env<V> = BTreeMap<V, bool>;
@@ -33,10 +36,10 @@ impl<V> Bools<V> {
 }
 impl<V: Clone> Bools<V> {
     pub fn is(self, rhs: Bools<V>) -> Bools<V> {
-        !(self ^ rhs)
+        Bools::Eq(Arc::new(self), Arc::new(rhs))
     }
     pub fn implies(self, rhs: Bools<V>) -> Bools<V> {
-        (!self) | rhs
+        Bools::Implies(Arc::new(self), Arc::new(rhs))
     }
 }
 
@@ -46,7 +49,12 @@ impl<V: Ord> Bools<V> {
             &Bools::Lit(ref id) => env.get(id).map(|x| *x),
             &Bools::And(ref a, ref b) => a.eval(env).and_then(|a| b.eval(env).map(|b| a & b)),
             &Bools::Or(ref a, ref b) => a.eval(env).and_then(|a| b.eval(env).map(|b| a | b)),
+            &Bools::Xor(ref a, ref b) => a.eval(env).and_then(|a| b.eval(env).map(|b| a ^ b)),
             &Bools::Not(ref a) => a.eval(env).map(|a| !a),
+            &Bools::Eq(ref a, ref b) => a.eval(env).and_then(|a| b.eval(env).map(|b| a == b)),
+            &Bools::Implies(ref a, ref b) => {
+                a.eval(env).and_then(|a| b.eval(env).map(|b| (!a) | b))
+            }
         }
     }
 }
@@ -57,7 +65,10 @@ impl<V: fmt::Display> fmt::Display for Bools<V> {
             &Bools::Lit(ref id) => write!(fmt, "{}", id),
             &Bools::And(ref a, ref b) => write!(fmt, "({} & {})", a, b),
             &Bools::Or(ref a, ref b) => write!(fmt, "({} | {})", a, b),
+            &Bools::Xor(ref a, ref b) => write!(fmt, "({} ^ {})", a, b),
             &Bools::Not(ref a) => write!(fmt, "!{}", a),
+            &Bools::Eq(ref a, ref b) => write!(fmt, "({} == {})", a, b),
+            &Bools::Implies(ref a, ref b) => write!(fmt, "({} -> {})", a, b),
         }
     }
 }
@@ -181,6 +192,20 @@ impl<V: Ord + Clone + fmt::Debug> Bools<V> {
                 cnf.assert_or(self_var, a, b);
                 self_var
             }
+            &Bools::Xor(ref l, ref r) => {
+                let f = ((**l).clone() | (**r).clone()) & !((**l).clone() & (**r).clone());
+                f.to_cnf_inner(cnf)
+            }
+            &Bools::Eq(ref l, ref r) => {
+                // !(l ^ r)
+                let f = !((**l).clone() ^ (**r).clone());
+                f.to_cnf_inner(cnf)
+            }
+            &Bools::Implies(ref l, ref r) => {
+                // (!l) | r
+                let f = !(**l).clone() | (**r).clone();
+                f.to_cnf_inner(cnf)
+            }
         }
     }
 }
@@ -209,7 +234,7 @@ impl<V> ops::Not for Bools<V> {
 impl<V: Clone> ops::BitXor for Bools<V> {
     type Output = Self;
     fn bitxor(self, other: Self) -> Self {
-        (self.clone() | other.clone()) & !(self & other)
+        Bools::Xor(Arc::new(self), Arc::new(other))
     }
 }
 
@@ -273,6 +298,7 @@ mod tests {
                 .weighted(1, |g: &mut G| Bools::arbitrary(g) | Bools::arbitrary(g))
                 .weighted(1, |g: &mut G| Bools::arbitrary(g) ^ Bools::arbitrary(g))
                 .weighted(1, |g: &mut G| Bools::arbitrary(g).is(Bools::arbitrary(g)))
+                .weighted(1, |g: &mut G| Bools::arbitrary(g).implies(Bools::arbitrary(g)))
                 .finish()
                 .unwrap()
         }
@@ -285,6 +311,15 @@ mod tests {
                     Box::new(iter::once((&**l).clone()).chain(iter::once((&**r).clone())))
                 }
                 &Bools::Or(ref l, ref r) => {
+                    Box::new(iter::once((&**l).clone()).chain(iter::once((&**r).clone())))
+                }
+                &Bools::Xor(ref l, ref r) => {
+                    Box::new(iter::once((&**l).clone()).chain(iter::once((&**r).clone())))
+                }
+                &Bools::Eq(ref l, ref r) => {
+                    Box::new(iter::once((&**l).clone()).chain(iter::once((&**r).clone())))
+                }
+                &Bools::Implies(ref l, ref r) => {
                     Box::new(iter::once((&**l).clone()).chain(iter::once((&**r).clone())))
                 }
             }
@@ -410,7 +445,7 @@ mod tests {
                 return TestResult::discard();
             }
 
-            info!("verify_cnf_prop: {:?} / {:?} => {:?}", input, env, val);
+            info!("verify_cnf_prop: {} / {:?} => {:?}", input, env, val);
 
             let satisfiable = Bools::var(top_var).is(input.clone());
             info!("{:?} <-> {:?} => {:?}", top_var, input, satisfiable);
@@ -432,8 +467,8 @@ mod tests {
                 debug!("Solution okay? {:?}: top: {:?} -> {:?}; expected: {:?}; from: {:?}",
                        okay,
                        top_var,
-                       eval_res,
                        val,
+                       eval_res,
                        solution);
                 TestResult::from_bool(okay)
             } else {
