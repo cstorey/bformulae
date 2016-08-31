@@ -35,6 +35,9 @@ impl<V: Clone> Bools<V> {
     pub fn is(self, rhs: Bools<V>) -> Bools<V> {
         !(self ^ rhs)
     }
+    pub fn implies(self, rhs: Bools<V>) -> Bools<V> {
+        (!self) | rhs
+    }
 }
 
 impl<V: Ord> Bools<V> {
@@ -359,6 +362,32 @@ mod tests {
     #[test]
     fn verify_is() {
         quickcheck::quickcheck(verify_is_prop as fn(Bools<Var>, Bools<Var>, Env<Var>) -> bool);
+    }
+
+    fn verify_implies_prop(left: Bools<Var>, right: Bools<Var>, env: Env<Var>) -> bool {
+        trace!("verify_and_prop: {:?} <-> {:?} / {:?}", left, right, env);
+        let expected = if let (Some(a), Some(b)) = (left.clone().eval(&env),
+                                                    right.clone().eval(&env)) {
+            Some(!a | b)
+        } else {
+            None
+        };
+        let f = left.clone().implies(right.clone());
+        let actual = f.clone().eval(&env);
+        println!("({} -> {}) [{}] in {:?} => {:?} (expect: {:?}; okay? {})",
+                 left,
+                 right,
+                 f,
+                 env,
+                 actual,
+                 expected,
+                 actual == expected);
+        actual == expected
+    }
+
+    #[test]
+    fn verify_implies() {
+        quickcheck::quickcheck(verify_implies_prop as fn(Bools<Var>, Bools<Var>, Env<Var>) -> bool);
     }
 
 
