@@ -2,13 +2,13 @@
 extern crate maplit;
 #[macro_use]
 extern crate log;
-extern crate sat;
+extern crate cryptominisat;
 use std::ops;
 use std::fmt;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
-use sat::solver::Solver;
-use sat::Literal;
+use cryptominisat::{Solver,Lit,Lbool};
+use log::LogLevel::Debug;
 
 #[derive(Debug,PartialOrd,Ord,PartialEq,Eq,Clone)]
 pub enum Bools<V> {
@@ -23,11 +23,17 @@ pub enum Bools<V> {
 
 pub type Env<V> = BTreeMap<V, bool>;
 
-#[derive(Debug)]
 pub struct CNF<V: Ord> {
-    pub instance: sat::Instance,
-    vars: BTreeMap<V, Literal>,
-    cache: BTreeMap<Bools<V>, Literal>,
+    pub instance: Solver,
+    vars: BTreeMap<V, Lit>,
+    cache: BTreeMap<Bools<V>, Lit>,
+}
+
+impl<V: fmt::Debug + Ord> fmt::Debug for CNF<V> {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+        fmt.debug_struct("CNF")
+            .finish()
+    }
 }
 
 impl<V> Bools<V> {
@@ -75,17 +81,27 @@ impl<V: fmt::Display> fmt::Display for Bools<V> {
 }
 
 
+fn lit_as_string(l: &Lit) -> String {
+    format!("{}{}", if l.isneg() { "-" } else { "" }, l.var()+1)
+}
+fn lbool_as_optbool(l: Lbool) -> Option<bool> {
+    match l {
+        Lbool::True => Some(true),
+        Lbool::False => Some(false),
+        Lbool::Undef => None,
+    }
+}
 
 impl<V: Ord + Clone + fmt::Debug> CNF<V> {
     fn new() -> CNF<V> {
         CNF {
-            instance: sat::Instance::new(),
+            instance: Solver::new(),
             vars: BTreeMap::new(),
             cache: BTreeMap::new(),
         }
     }
 
-    fn assert_var(&mut self, var: V, val: bool) -> Literal {
+    fn assert_var(&mut self, var: V, val: bool) -> Lit {
         let var = self.var(var);
         self.assert([if val {
                          var
@@ -95,31 +111,33 @@ impl<V: Ord + Clone + fmt::Debug> CNF<V> {
         var
     }
 
-    fn assert<A: AsRef<[Literal]> + fmt::Debug>(&mut self, s: A) {
-        debug!("assert! {:?}", s);
-        self.instance.assert_any(s.as_ref())
+    fn assert<A: AsRef<[Lit]>>(&mut self, s: A) {
+        debug!("cnf: {}", s.as_ref().iter()
+                .map(|l| lit_as_string(l))
+                .collect::<Vec<_>>().join(" "));
+        self.instance.add_clause(s.as_ref());
     }
-    fn assert_eq(&mut self, a: Literal, b: Literal) {
-        debug!("assert! {:?} <-> {:?}", a, b);
+    fn assert_eq(&mut self, a: Lit, b: Lit) {
+        debug!("assert! {:?} <-> {:?}", lit_as_string(&a), lit_as_string(&b));
         self.assert([!a, b]);
         self.assert([a, !b]);
     }
 
-    fn assert_and(&mut self, it: Literal, l: Literal, r: Literal) {
-        debug!("assert! {:?} <-> {:?} /\\ {:?}", it, l, r);
+    fn assert_and(&mut self, it: Lit, l: Lit, r: Lit) {
+        debug!("assert! {:?} <-> {:?} /\\ {:?}", lit_as_string(&it), lit_as_string(&l), lit_as_string(&r));
         self.assert([!l, !r, it]);
         self.assert([l, !it]);
         self.assert([r, !it]);
     }
-    fn assert_or(&mut self, it: Literal, l: Literal, r: Literal) {
-        debug!("assert! {:?} <-> {:?} \\/ {:?}", it, l, r);
+    fn assert_or(&mut self, it: Lit, l: Lit, r: Lit) {
+        debug!("assert! {:?} <-> {:?} \\/ {:?}", lit_as_string(&it), lit_as_string(&l), lit_as_string(&r));
         self.assert([l, r, !it]);
         self.assert([!l, it]);
         self.assert([!r, it]);
     }
 
-    fn assert_xor(&mut self, it: Literal, l: Literal, r: Literal) {
-        debug!("assert! {:?} <-> {:?} ^ {:?}", it, l, r);
+    fn assert_xor(&mut self, it: Lit, l: Lit, r: Lit) {
+        debug!("assert! {:?} <-> {:?} ^ {:?}", lit_as_string(&it), lit_as_string(&l), lit_as_string(&r));
         // IT = L ^ R
         // (!L | !R | !IT) & (L|R|!IT) & (L|!R|IT) & (!L|R|IT)
         self.assert([!l, !r, !it]);
@@ -128,40 +146,47 @@ impl<V: Ord + Clone + fmt::Debug> CNF<V> {
         self.assert([!l, r, it]);
     }
 
-    fn var(&mut self, var: V) -> Literal {
+    fn var(&mut self, var: V) -> Lit {
         let &mut CNF { ref mut instance, ref mut vars, .. } = self;
-        vars.entry(var).or_insert_with(|| instance.fresh_var()).clone()
+        let res = vars.entry(var.clone()).or_insert_with(|| instance.new_var());
+        debug!("var: {:?} => {:?}", var, lit_as_string(res));
+        res.clone()
     }
 
 
-    pub fn solve_with(&self, s: &Solver) -> Option<sat::Assignment> {
-        s.solve(&self.instance)
+    // FIXME: Return type.
+    pub fn solve_with(&mut self) -> bool {
+        let ret = lbool_as_optbool(self.instance.solve());
+        debug!("Solution assignments: {:?}", self.instance.get_model().iter().cloned().enumerate().map(|(i, lb)| (i, lbool_as_optbool(lb))).collect::<BTreeMap<_, _>>());
+        ret.expect("solve_with")
     }
 
-    pub fn next_solution(&mut self, s: &Solver) -> Option<BTreeMap<V, bool>> {
-        if let Some(s) = s.solve(&self.instance) {
-            let revmap = self.cache.iter().map(|(f, l)| (l.clone(), f.clone())).collect::<BTreeMap<_, _>>();
-            trace!("Assignment found: {:?}", s);
-            for (l, f) in revmap {
-                trace!("Formula: {:?} => {:?}", f, s.get(l)); 
+    pub fn next_solution(&mut self) -> Option<BTreeMap<V, bool>> {
+        if self.solve_with() {
+            if log_enabled!(Debug) {
+                debug!("Assignment found");
+                for (l, f) in self.cache.iter().map(|(f, l)| (l.clone(), f.clone())) {
+                    debug!("Formula: {:?} => {:?}", f, self.instance.is_true(l));
+                }
+                for (v, l) in self.vars.iter() {
+                    debug!("Var: {:?} => {:?}", v, self.instance.is_true(*l));
+                }
             }
-            for (v, l) in self.vars.iter() {
-                trace!("Var: {:?} => {:?}", v, s.get(*l)); 
-            }
+
             let clause = self.vars
                              .values()
                              .map(|l| {
-                                 if s.get(*l) {
+                                 if self.instance.is_true(*l) {
                                      !l.clone()
                                  } else {
                                      l.clone()
                                  }
                              })
                              .collect::<Vec<_>>();
-            debug!("Negation clause: {:?}", clause);
-            self.instance.assert_any(clause.iter());
+            debug!("Negation clause: {:?}", clause.iter().map(lit_as_string).collect::<Vec<_>>());
+            self.instance.add_clause(&clause);
 
-            let res = self.vars.iter().map(|(v, l)| (v.clone(), s.get(*l))).collect();
+            let res = self.vars.iter().map(|(v, l)| (v.clone(), self.instance.is_true(*l))).collect();
             Some(res)
         } else {
             None
@@ -170,8 +195,10 @@ impl<V: Ord + Clone + fmt::Debug> CNF<V> {
 
 
 
-    pub fn get(&self, assign: &sat::Assignment, var: &V) -> Option<bool> {
-        self.vars.get(var).map(|l| assign.get(l.clone()))
+    pub fn get(&self, var: &V) -> Option<bool> {
+        self.vars.get(var)
+            .and_then(|l| self.instance.get_model().get(l.var() as usize))
+            .and_then(|lb| lbool_as_optbool(*lb))
     }
 }
 
@@ -186,59 +213,59 @@ impl<V: Ord + Clone + fmt::Debug> Bools<V> {
         cnf
     }
 
-    fn to_cnf_inner(&self, cnf: &mut CNF<V>) -> Literal {
-            if cnf.cache.contains_key(self) {
-                let val = cnf.cache[self];
-                debug!("subclause(cached): {:?} => {:?}", self, val);
-                val.clone()
-            } else {
-                let val = match self {
-                    &Bools::Lit(ref id) => {
-                        let it = cnf.var(id.clone());
-                        it.clone()
-                    }
-                    &Bools::Not(ref a) => {
-                        let self_var = cnf.instance.fresh_var();
-                        let it = a.to_cnf_inner(cnf);
-                        cnf.assert_eq(self_var, !it);
-                        self_var
-                    }
-                    &Bools::And(ref l, ref r) => {
-                        let self_var = cnf.instance.fresh_var();
-                        let a = l.to_cnf_inner(cnf);
-                        let b = r.to_cnf_inner(cnf);
-                        cnf.assert_and(self_var, a, b);
-                        self_var
-                    }
-                    &Bools::Or(ref l, ref r) => {
-                        let self_var = cnf.instance.fresh_var();
-                        let a = l.to_cnf_inner(cnf);
-                        let b = r.to_cnf_inner(cnf);
-                        cnf.assert_or(self_var, a, b);
-                        self_var
-                    }
-                    &Bools::Xor(ref l, ref r) => {
-                        let self_var = cnf.instance.fresh_var();
-                        let a = l.to_cnf_inner(cnf);
-                        let b = r.to_cnf_inner(cnf);
-                        cnf.assert_xor(self_var, a, b);
-                        self_var
-                    }
-                    &Bools::Eq(ref l, ref r) => {
-                        // !(l ^ r)
-                        let f = !((**l).clone() ^ (**r).clone());
-                        f.to_cnf_inner(cnf)
-                    }
-                    &Bools::Implies(ref l, ref r) => {
-                        // (!l) | r
-                        let f = !(**l).clone() | (**r).clone();
-                        f.to_cnf_inner(cnf)
-                    }
-                };
-                cnf.cache.insert(self.clone(), val);
-                debug!("subclause: {:?} => {:?}", self, val);
-                val
-            }
+    fn to_cnf_inner(&self, cnf: &mut CNF<V>) -> Lit {
+        if cnf.cache.contains_key(self) {
+            let val = cnf.cache[self];
+            debug!("subclause(cached): {:?} => {:?}", self, lit_as_string(&val));
+            val.clone()
+        } else {
+            let val = match self {
+                &Bools::Lit(ref id) => {
+                    let it = cnf.var(id.clone());
+                    it.clone()
+                }
+                &Bools::Not(ref a) => {
+                    let self_var = cnf.instance.new_var();
+                    let it = a.to_cnf_inner(cnf);
+                    cnf.assert_eq(self_var, !it);
+                    self_var
+                }
+                &Bools::And(ref l, ref r) => {
+                    let self_var = cnf.instance.new_var();
+                    let a = l.to_cnf_inner(cnf);
+                    let b = r.to_cnf_inner(cnf);
+                    cnf.assert_and(self_var, a, b);
+                    self_var
+                }
+                &Bools::Or(ref l, ref r) => {
+                    let self_var = cnf.instance.new_var();
+                    let a = l.to_cnf_inner(cnf);
+                    let b = r.to_cnf_inner(cnf);
+                    cnf.assert_or(self_var, a, b);
+                    self_var
+                }
+                &Bools::Xor(ref l, ref r) => {
+                    let self_var = cnf.instance.new_var();
+                    let a = l.to_cnf_inner(cnf);
+                    let b = r.to_cnf_inner(cnf);
+                    cnf.assert_xor(self_var, a, b);
+                    self_var
+                }
+                &Bools::Eq(ref l, ref r) => {
+                    // !(l ^ r)
+                    let f = !((**l).clone() ^ (**r).clone());
+                    f.to_cnf_inner(cnf)
+                }
+                &Bools::Implies(ref l, ref r) => {
+                    // (!l) | r
+                    let f = !(**l).clone() | (**r).clone();
+                    f.to_cnf_inner(cnf)
+                }
+            };
+            cnf.cache.insert(self.clone(), val);
+            debug!("subclause: {:?} => {:?}", self, lit_as_string(&val));
+            val
+        }
     }
 }
 
@@ -275,15 +302,12 @@ mod tests {
     extern crate quickcheck;
     extern crate rand;
     extern crate env_logger;
-    use sat;
     use self::rand::Rng;
     use super::{Bools, Env, CNF};
     use self::quickcheck::{Gen, Arbitrary, TestResult};
     use std::collections::{BTreeSet, BTreeMap};
     use std::iter;
     use std::sync::Arc;
-    use std::process::Command;
-    use sat::solver::Solver;
 
     type Var = u8;
 
@@ -477,22 +501,14 @@ mod tests {
             info!("{:?} <-> {:?} => {:?}", top_var, input, satisfiable);
 
             let mut cnf = satisfiable.to_cnf(&env);
-
-            let s = sat::solver::Dimacs::new(|| {
-                let mut c = Command::new("minisat");
-                c.arg("-verb=0");
-                c
-            });
+            while let Some(soln) = cnf.next_solution() {
+                info!("solution: {:?}", soln);
+            }
 
             let mut cnf = satisfiable.to_cnf(&env);
-            debug!("cnf: {:?}", {
-                let mut out = Vec::new();
-                s.write_instance(&mut out, &cnf.instance);
-                String::from_utf8(out)
-            });
 
             let mut solutions = BTreeSet::new();
-            while let Some(soln) = cnf.next_solution(&s) {
+            while let Some(soln) = cnf.next_solution() {
                 debug!("solution: {:?}", soln);
                 solutions.insert(soln[&top_var]);
             }
@@ -523,12 +539,7 @@ mod tests {
         let rv = cnf.assert_var("r", r);
         cnf.assert_and(rv, av, bv);
 
-        let s = sat::solver::Dimacs::new(|| {
-            let mut c = Command::new("minisat");
-            c.arg("-verb=0");
-            c
-        });
-        assert_eq!(cnf.solve_with(&s).is_some(), r == (a & b))
+        assert_eq!(cnf.solve_with(), r == (a & b))
     }
 
     #[test]
@@ -544,12 +555,7 @@ mod tests {
         let rv = cnf.assert_var("r", r);
         cnf.assert_or(rv, av, bv);
 
-        let s = sat::solver::Dimacs::new(|| {
-            let mut c = Command::new("minisat");
-            c.arg("-verb=0");
-            c
-        });
-        assert_eq!(cnf.solve_with(&s).is_some(), r == (a | b))
+        assert_eq!(cnf.solve_with(), r == (a | b))
     }
 
     #[test]
@@ -564,21 +570,8 @@ mod tests {
         let rv = cnf.assert_var("r", r);
         cnf.assert_eq(rv, av);
 
-        let s = sat::solver::Dimacs::new(|| {
-            let mut c = Command::new("minisat");
-            c.arg("-verb=0");
-            c
-        });
-        info!("cnf: {}", {
-            let mut out = Vec::new();
-            s.write_instance(&mut out, &cnf.instance);
-            String::from_utf8_lossy(&out).to_string()
-        });
-
- 
-        let res = cnf.solve_with(&s);
-        info!("{:?}@{:?} <=> {:?}@{:?}: sat: {:?}", a, av, r, rv, res);
-        assert_eq!(res.is_some(), r == a)
+        let res = cnf.solve_with();
+        assert_eq!(res, r == a)
     }
 
     #[test]
@@ -594,12 +587,7 @@ mod tests {
         let rv = cnf.assert_var("r", r);
         cnf.assert_xor(rv, av, bv);
 
-        let s = sat::solver::Dimacs::new(|| {
-            let mut c = Command::new("minisat");
-            c.arg("-verb=0");
-            c
-        });
-        assert_eq!(cnf.solve_with(&s).is_some(), r == (a ^ b))
+        assert_eq!(cnf.solve_with(), r == (a ^ b))
     }
 
     #[test]
@@ -619,22 +607,11 @@ mod tests {
                               |acc, x| Some(acc.map(|acc| acc & x.clone()).unwrap_or(x)))
                         .expect("formula");
 
-        let s = sat::solver::Dimacs::new(|| {
-            let mut c = Command::new("minisat");
-            c.arg("-verb=0");
-            c
-        });
         println!("Formula: {}", f);
         let mut cnf = f.to_cnf(&btreemap![]);
 
-        println!("cnf: {}", {
-            let mut out = Vec::new();
-            s.write_instance(&mut out, &cnf.instance);
-            String::from_utf8(out).unwrap_or("".to_string())
-        });
-
         let mut solutions = BTreeSet::new();
-        while let Some(soln) = cnf.next_solution(&s) {
+        while let Some(soln) = cnf.next_solution() {
             println!("solution: {:?}", soln);
             solutions.insert(soln);
         }
