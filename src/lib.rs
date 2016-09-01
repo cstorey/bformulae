@@ -218,8 +218,11 @@ impl<V: Ord + Clone + fmt::Debug> Bools<V> {
                         self_var
                     }
                     &Bools::Xor(ref l, ref r) => {
-                        let f = ((**l).clone() | (**r).clone()) & !((**l).clone() & (**r).clone());
-                        f.to_cnf_inner(cnf)
+                        let self_var = cnf.instance.fresh_var();
+                        let a = l.to_cnf_inner(cnf);
+                        let b = r.to_cnf_inner(cnf);
+                        cnf.assert_xor(self_var, a, b);
+                        self_var
                     }
                     &Bools::Eq(ref l, ref r) => {
                         // !(l ^ r)
@@ -263,8 +266,7 @@ impl<V> ops::Not for Bools<V> {
 impl<V: Clone> ops::BitXor for Bools<V> {
     type Output = Self;
     fn bitxor(self, other: Self) -> Self {
-        // Bools::Xor(Arc::new(self), Arc::new(other))
-        (self.clone() | other.clone()) & !(self & other)
+        Bools::Xor(Arc::new(self), Arc::new(other))
     }
 }
 
@@ -610,8 +612,8 @@ mod tests {
 
     #[test]
     fn should_iter_examples() {
-        let vars = [0, 1];
-        let f = !vars.iter()
+        let vars = ['a', 'b'];
+        let mut f = !vars.iter()
                         .map(|&v| Bools::var(v))
                         .fold(None,
                               |acc, x| Some(acc.map(|acc| acc & x.clone()).unwrap_or(x)))
@@ -622,10 +624,10 @@ mod tests {
             c.arg("-verb=0");
             c
         });
-        debug!("Formula: {}", f);
+        println!("Formula: {}", f);
         let mut cnf = f.to_cnf(&btreemap![]);
 
-        debug!("cnf: {}", {
+        println!("cnf: {}", {
             let mut out = Vec::new();
             s.write_instance(&mut out, &cnf.instance);
             String::from_utf8(out).unwrap_or("".to_string())
@@ -639,10 +641,9 @@ mod tests {
 
         assert_eq!(solutions,
                    btreeset! {
-            btreemap!{0 => false, 1 => false},
-            btreemap!{0 => false, 1 => true},
-            btreemap!{0 => true, 1 => false},
+            btreemap!{'a' => false, 'b' => false},
+            btreemap!{'a' => false, 'b' => true},
+            btreemap!{'a' => true, 'b' => false},
         });
-
     }
 }
