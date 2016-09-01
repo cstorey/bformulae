@@ -21,6 +21,9 @@ install:
   - true
 
 before_script:
+- python-config --ldflags
+- export PATH=$(echo $PATH | tr ':' "\n" | sed '/\/opt\/python/d' | tr "\n" ":" | sed "s|::|:|g")
+- python-config --ldflags
 - |
     pip install 'travis-cargo<0.2' --user &&
     export PATH=$HOME/.local/bin:$PATH
