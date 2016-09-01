@@ -37,12 +37,10 @@ impl<V> Bools<V> {
 }
 impl<V: Clone> Bools<V> {
     pub fn is(self, rhs: Bools<V>) -> Bools<V> {
-        // Bools::Eq(Arc::new(self), Arc::new(rhs))
-        !(self ^ rhs)
+        Bools::Eq(Arc::new(self), Arc::new(rhs))
     }
     pub fn implies(self, rhs: Bools<V>) -> Bools<V> {
-        // Bools::Implies(Arc::new(self), Arc::new(rhs))
-        (!self) | rhs
+        Bools::Implies(Arc::new(self), Arc::new(rhs))
     }
 }
 
@@ -119,6 +117,17 @@ impl<V: Ord + Clone + fmt::Debug> CNF<V> {
         self.assert([!l, it]);
         self.assert([!r, it]);
     }
+
+    fn assert_xor(&mut self, it: Literal, l: Literal, r: Literal) {
+        debug!("assert! {:?} <-> {:?} ^ {:?}", it, l, r);
+        // IT = L ^ R
+        // (!L | !R | !IT) & (L|R|!IT) & (L|!R|IT) & (!L|R|IT)
+        self.assert([!l, !r, !it]);
+        self.assert([l, r, !it]);
+        self.assert([l, !r, it]);
+        self.assert([!l, r, it]);
+    }
+
     fn var(&mut self, var: V) -> Literal {
         let &mut CNF { ref mut instance, ref mut vars, .. } = self;
         vars.entry(var).or_insert_with(|| instance.fresh_var()).clone()
@@ -547,7 +556,7 @@ mod tests {
         quickcheck::quickcheck(check_or_gate_prop as fn(bool, bool, bool) );
     }
 
-    fn check_eq_gate_prop(r: bool, a: bool) {
+    fn check_eq_prop(r: bool, a: bool) {
         let mut cnf = CNF::new();
         let av = cnf.assert_var("a", a);
         let rv = cnf.assert_var("r", r);
@@ -571,10 +580,33 @@ mod tests {
     }
 
     #[test]
-    fn check_eq_gate() {
+    fn check_eq() {
         env_logger::init().unwrap_or(());
-        quickcheck::quickcheck(check_eq_gate_prop as fn(bool, bool) );
+        quickcheck::quickcheck(check_eq_prop as fn(bool, bool) );
     }
+
+    fn check_xor_gate_prop(r: bool, a: bool, b: bool) {
+        let mut cnf = CNF::new();
+        let av = cnf.assert_var("a", a);
+        let bv = cnf.assert_var("b", b);
+        let rv = cnf.assert_var("r", r);
+        cnf.assert_xor(rv, av, bv);
+
+        let s = sat::solver::Dimacs::new(|| {
+            let mut c = Command::new("minisat");
+            c.arg("-verb=0");
+            c
+        });
+        assert_eq!(cnf.solve_with(&s).is_some(), r == (a ^ b))
+    }
+
+    #[test]
+    fn check_xor_gate() {
+        env_logger::init().unwrap_or(());
+        quickcheck::quickcheck(check_xor_gate_prop as fn(bool, bool, bool) );
+    }
+
+
 
     #[test]
     fn should_iter_examples() {
