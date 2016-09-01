@@ -176,13 +176,14 @@ impl<V: Ord + Clone + fmt::Debug> CNF<V> {
 }
 
 impl<V: Ord + Clone + fmt::Debug> Bools<V> {
-    pub fn to_cnf(&self, env: &Env<V>) -> (Literal, CNF<V>) {
+    pub fn to_cnf(&self, env: &Env<V>) -> CNF<V> {
         let mut cnf = CNF::new();
         for (k, v) in env.iter() {
             cnf.assert_var(k.clone(), *v);
         }
         let top = self.to_cnf_inner(&mut cnf);
-        (top, cnf)
+        cnf.assert([top]);
+        cnf
     }
 
     fn to_cnf_inner(&self, cnf: &mut CNF<V>) -> Literal {
@@ -473,7 +474,7 @@ mod tests {
             let satisfiable = Bools::var(top_var).is(input.clone());
             info!("{:?} <-> {:?} => {:?}", top_var, input, satisfiable);
 
-            let (top, mut cnf) = satisfiable.to_cnf(&env);
+            let mut cnf = satisfiable.to_cnf(&env);
 
             let s = sat::solver::Dimacs::new(|| {
                 let mut c = Command::new("minisat");
@@ -481,8 +482,8 @@ mod tests {
                 c
             });
 
-            let (_top, mut cnf) = satisfiable.to_cnf(&env);
-            debug!("top: {:?}; cnf: {:?}", top, {
+            let mut cnf = satisfiable.to_cnf(&env);
+            debug!("cnf: {:?}", {
                 let mut out = Vec::new();
                 s.write_instance(&mut out, &cnf.instance);
                 String::from_utf8(out)
@@ -508,7 +509,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn verify_cnf() {
         env_logger::init().unwrap_or(());
         quickcheck::quickcheck(verify_cnf_prop as fn(Bools<Var>, Env<Var>) -> TestResult);
@@ -611,7 +611,7 @@ mod tests {
     #[test]
     fn should_iter_examples() {
         let vars = [0, 1];
-        let mut f = vars.iter()
+        let f = !vars.iter()
                         .map(|&v| Bools::var(v))
                         .fold(None,
                               |acc, x| Some(acc.map(|acc| acc & x.clone()).unwrap_or(x)))
@@ -623,7 +623,7 @@ mod tests {
             c
         });
         debug!("Formula: {}", f);
-        let (top, mut cnf) = (!f.clone()).to_cnf(&btreemap![]);
+        let mut cnf = f.to_cnf(&btreemap![]);
 
         debug!("cnf: {}", {
             let mut out = Vec::new();
@@ -642,7 +642,6 @@ mod tests {
             btreemap!{0 => false, 1 => false},
             btreemap!{0 => false, 1 => true},
             btreemap!{0 => true, 1 => false},
-            btreemap!{0 => true, 1 => true},
         });
 
     }
