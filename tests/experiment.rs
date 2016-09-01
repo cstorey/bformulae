@@ -23,7 +23,7 @@ fn should_iter_examples() {
     });
 
     println!("Formula: {}", f);
-    let mut cnf = (!f.clone()).to_cnf(&btreemap![]);
+    let (_top, mut cnf) = (!f.clone()).to_cnf(&btreemap![]);
 
     println!("cnf: {}", {
         let mut out = Vec::new();
