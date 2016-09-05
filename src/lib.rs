@@ -1,3 +1,20 @@
+//! Provides a way to construct boolean formulae in propositional logic, and
+//! evaluate their satisfiability given a set of variable assignments.
+//! # Example
+//! This is useful if you want to find out for what set of assignments a formulae is falsifiable. Eg:
+//!
+//! ```
+//! use bformulae::Bools;
+//! use std::collections::BTreeMap;
+//!
+//! let a = Bools::var("a");
+//! let b = Bools::var("b");
+//! let mut cnf = a.is(b).to_cnf(&BTreeMap::new());
+//! for soln in cnf {
+//!     println!("solution: {:?}", soln);
+//! }
+//! ```
+
 #[macro_use]
 extern crate maplit;
 #[macro_use]
@@ -5,11 +22,13 @@ extern crate log;
 extern crate cryptominisat;
 use std::ops;
 use std::fmt;
-use std::collections::{BTreeMap, BTreeSet};
+use std::iter;
+use std::collections::BTreeMap;
 use std::sync::Arc;
-use cryptominisat::{Solver,Lit,Lbool};
-use log::LogLevel::Debug;
+use cryptominisat::{Solver, Lit, Lbool};
 
+/// The core represenation of a proposition, parameterized over the variable
+/// type.
 #[derive(Debug,PartialOrd,Ord,PartialEq,Eq,Clone)]
 pub enum Bools<V> {
     Lit(V),
@@ -21,10 +40,13 @@ pub enum Bools<V> {
     Implies(Arc<Bools<V>>, Arc<Bools<V>>),
 }
 
+/// Convenience alias for the type of environments.
 pub type Env<V> = BTreeMap<V, bool>;
 
+/// A representation of a formula encoded as CNF.
+/// Also allows iteration over solutions.
 pub struct CNF<V: Ord> {
-    pub instance: Solver,
+    instance: Solver,
     vars: BTreeMap<V, Lit>,
     cache: BTreeMap<Bools<V>, Lit>,
 }
@@ -32,25 +54,62 @@ pub struct CNF<V: Ord> {
 impl<V: fmt::Debug + Ord> fmt::Debug for CNF<V> {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         fmt.debug_struct("CNF")
-            .finish()
+           .finish()
     }
 }
 
 impl<V> Bools<V> {
+    /// Returns a variable reference.
+    ///
+    /// ```
+    /// use bformulae::Bools;
+    /// // f = a
+    /// let f = Bools::var("a");
+    /// ```
     pub fn var(id: V) -> Bools<V> {
         Bools::Lit(id)
     }
 }
 impl<V: Clone> Bools<V> {
+    /// Returns a formula that is true when `self` and `rhs` are equal.
+    ///
+    /// ```
+    /// use bformulae::Bools;
+    /// // f = a ↔ b
+    /// let f = Bools::var("a").is(Bools::var("b"));
+    /// ```
+
     pub fn is(self, rhs: Bools<V>) -> Bools<V> {
         Bools::Eq(Arc::new(self), Arc::new(rhs))
     }
+
+    /// Returns a formula that is of the form:
+    ///
+    /// ```
+    /// use bformulae::Bools;
+    /// // f = `a → b`
+    /// let f = Bools::var("a").is(Bools::var("b"));
+    /// ```
     pub fn implies(self, rhs: Bools<V>) -> Bools<V> {
         Bools::Implies(Arc::new(self), Arc::new(rhs))
     }
 }
 
 impl<V: Ord> Bools<V> {
+    /// Evaluates a formula over the given variable substitutions, and returns whether the formula is true or not.
+    /// Returns None if a variable is missing from the environment.
+    ///
+    /// ```
+    /// use bformulae::Bools;
+    /// use std::collections::BTreeMap;
+    ///
+    /// let f = Bools::var("athing");
+    /// let mut env = BTreeMap::new();
+    /// env.insert("athing", true);
+    /// assert_eq!(f.eval(&env), Some(true));
+    /// assert_eq!((!f).eval(&env), Some(false));
+    /// ```
+
     pub fn eval(&self, env: &Env<V>) -> Option<bool> {
         match self {
             &Bools::Lit(ref id) => env.get(id).map(|x| *x),
@@ -82,7 +141,13 @@ impl<V: fmt::Display> fmt::Display for Bools<V> {
 
 
 fn lit_as_string(l: &Lit) -> String {
-    format!("{}{}", if l.isneg() { "-" } else { "" }, l.var()+1)
+    format!("{}{}",
+            if l.isneg() {
+                "-"
+            } else {
+                ""
+            },
+            l.var() + 1)
 }
 fn lbool_as_optbool(l: Lbool) -> Option<bool> {
     match l {
@@ -92,7 +157,7 @@ fn lbool_as_optbool(l: Lbool) -> Option<bool> {
     }
 }
 
-impl<V: Ord + Clone + fmt::Debug> CNF<V> {
+impl<V: Ord + Clone> CNF<V> {
     fn new() -> CNF<V> {
         CNF {
             instance: Solver::new(),
@@ -112,32 +177,46 @@ impl<V: Ord + Clone + fmt::Debug> CNF<V> {
     }
 
     fn assert<A: AsRef<[Lit]>>(&mut self, s: A) {
-        debug!("cnf: {}", s.as_ref().iter()
+        debug!("cnf: {}",
+               s.as_ref()
+                .iter()
                 .map(|l| lit_as_string(l))
-                .collect::<Vec<_>>().join(" "));
+                .collect::<Vec<_>>()
+                .join(" "));
         self.instance.add_clause(s.as_ref());
     }
     fn assert_eq(&mut self, a: Lit, b: Lit) {
-        debug!("assert! {:?} <-> {:?}", lit_as_string(&a), lit_as_string(&b));
+        debug!("assert! {:?} <-> {:?}",
+               lit_as_string(&a),
+               lit_as_string(&b));
         self.assert([!a, b]);
         self.assert([a, !b]);
     }
 
     fn assert_and(&mut self, it: Lit, l: Lit, r: Lit) {
-        debug!("assert! {:?} <-> {:?} /\\ {:?}", lit_as_string(&it), lit_as_string(&l), lit_as_string(&r));
+        debug!("assert! {:?} <-> {:?} /\\ {:?}",
+               lit_as_string(&it),
+               lit_as_string(&l),
+               lit_as_string(&r));
         self.assert([!l, !r, it]);
         self.assert([l, !it]);
         self.assert([r, !it]);
     }
     fn assert_or(&mut self, it: Lit, l: Lit, r: Lit) {
-        debug!("assert! {:?} <-> {:?} \\/ {:?}", lit_as_string(&it), lit_as_string(&l), lit_as_string(&r));
+        debug!("assert! {:?} <-> {:?} \\/ {:?}",
+               lit_as_string(&it),
+               lit_as_string(&l),
+               lit_as_string(&r));
         self.assert([l, r, !it]);
         self.assert([!l, it]);
         self.assert([!r, it]);
     }
 
     fn assert_xor(&mut self, it: Lit, l: Lit, r: Lit) {
-        debug!("assert! {:?} <-> {:?} ^ {:?}", lit_as_string(&it), lit_as_string(&l), lit_as_string(&r));
+        debug!("assert! {:?} <-> {:?} ^ {:?}",
+               lit_as_string(&it),
+               lit_as_string(&l),
+               lit_as_string(&r));
         // IT = L ^ R
         // (!L | !R | !IT) & (L|R|!IT) & (L|!R|IT) & (!L|R|IT)
         self.assert([!l, !r, !it]);
@@ -149,30 +228,31 @@ impl<V: Ord + Clone + fmt::Debug> CNF<V> {
     fn var(&mut self, var: V) -> Lit {
         let &mut CNF { ref mut instance, ref mut vars, .. } = self;
         let res = vars.entry(var.clone()).or_insert_with(|| instance.new_var());
-        debug!("var: {:?} => {:?}", var, lit_as_string(res));
+        debug!("var: {:?}", lit_as_string(res));
         res.clone()
     }
 
 
     // FIXME: Return type.
-    pub fn solve_with(&mut self) -> bool {
+    fn solve_with(&mut self) -> bool {
         let ret = lbool_as_optbool(self.instance.solve());
-        debug!("Solution assignments: {:?}", self.instance.get_model().iter().cloned().enumerate().map(|(i, lb)| (i, lbool_as_optbool(lb))).collect::<BTreeMap<_, _>>());
+        debug!("Solution assignments: {:?}",
+               self.instance
+                   .get_model()
+                   .iter()
+                   .cloned()
+                   .enumerate()
+                   .map(|(i, lb)| (i, lbool_as_optbool(lb)))
+                   .collect::<BTreeMap<_, _>>());
         ret.expect("solve_with")
     }
+}
 
-    pub fn next_solution(&mut self) -> Option<BTreeMap<V, bool>> {
+impl<V: Ord + Clone> iter::Iterator for CNF<V> {
+    type Item = Env<V>;
+
+    fn next(&mut self) -> Option<Env<V>> {
         if self.solve_with() {
-            if log_enabled!(Debug) {
-                debug!("Assignment found");
-                for (l, f) in self.cache.iter().map(|(f, l)| (l.clone(), f.clone())) {
-                    debug!("Formula: {:?} => {:?}", f, self.instance.is_true(l));
-                }
-                for (v, l) in self.vars.iter() {
-                    debug!("Var: {:?} => {:?}", v, self.instance.is_true(*l));
-                }
-            }
-
             let clause = self.vars
                              .values()
                              .map(|l| {
@@ -183,26 +263,36 @@ impl<V: Ord + Clone + fmt::Debug> CNF<V> {
                                  }
                              })
                              .collect::<Vec<_>>();
-            debug!("Negation clause: {:?}", clause.iter().map(lit_as_string).collect::<Vec<_>>());
+            debug!("Negation clause: {:?}",
+                   clause.iter().map(lit_as_string).collect::<Vec<_>>());
             self.instance.add_clause(&clause);
 
-            let res = self.vars.iter().map(|(v, l)| (v.clone(), self.instance.is_true(*l))).collect();
+            let res = self.vars
+                          .iter()
+                          .map(|(v, l)| (v.clone(), self.instance.is_true(*l)))
+                          .collect();
             Some(res)
         } else {
             None
         }
     }
-
-
-
-    pub fn get(&self, var: &V) -> Option<bool> {
-        self.vars.get(var)
-            .and_then(|l| self.instance.get_model().get(l.var() as usize))
-            .and_then(|lb| lbool_as_optbool(*lb))
-    }
 }
 
 impl<V: Ord + Clone + fmt::Debug> Bools<V> {
+    /// Encodes the formula and given environment into Conjunctive Normal Form
+    /// using the Tseytin transformation. The resulting CNF is satisfiable iff
+    /// the propositional formula is true in all cases.
+    ///
+    /// ```
+    /// use bformulae::Bools;
+    /// use std::collections::BTreeMap;
+    ///
+    /// let f = Bools::var("athing");
+    /// let mut env = BTreeMap::new();
+    /// env.insert("athing", true);
+    /// let cnf = f.to_cnf(&env);
+    /// ```
+
     pub fn to_cnf(&self, env: &Env<V>) -> CNF<V> {
         let mut cnf = CNF::new();
         for (k, v) in env.iter() {
@@ -302,10 +392,9 @@ mod tests {
     extern crate quickcheck;
     extern crate rand;
     extern crate env_logger;
-    use self::rand::Rng;
     use super::{Bools, Env, CNF};
     use self::quickcheck::{Gen, Arbitrary, TestResult};
-    use std::collections::{BTreeSet, BTreeMap};
+    use std::collections::BTreeSet;
     use std::iter;
     use std::sync::Arc;
 
@@ -460,13 +549,13 @@ mod tests {
         let f = left.clone().implies(right.clone());
         let actual = f.clone().eval(&env);
         debug!("({} -> {}) [{}] in {:?} => {:?} (expect: {:?}; okay? {})",
-                 left,
-                 right,
-                 f,
-                 env,
-                 actual,
-                 expected,
-                 actual == expected);
+               left,
+               right,
+               f,
+               env,
+               actual,
+               expected,
+               actual == expected);
         actual == expected
     }
 
@@ -500,15 +589,15 @@ mod tests {
             let satisfiable = Bools::var(top_var).is(input.clone());
             info!("{:?} <-> {:?} => {:?}", top_var, input, satisfiable);
 
-            let mut cnf = satisfiable.to_cnf(&env);
-            while let Some(soln) = cnf.next_solution() {
+            let cnf = satisfiable.to_cnf(&env);
+            for soln in cnf {
                 info!("solution: {:?}", soln);
             }
 
-            let mut cnf = satisfiable.to_cnf(&env);
+            let cnf = satisfiable.to_cnf(&env);
 
             let mut solutions = BTreeSet::new();
-            while let Some(soln) = cnf.next_solution() {
+            for soln in cnf {
                 debug!("solution: {:?}", soln);
                 solutions.insert(soln[&top_var]);
             }
@@ -539,13 +628,13 @@ mod tests {
         let rv = cnf.assert_var("r", r);
         cnf.assert_and(rv, av, bv);
 
-        assert_eq!(cnf.solve_with(), r == (a & b))
+        assert_eq!(cnf.next().is_some(), r == (a & b))
     }
 
     #[test]
     fn check_and_gate() {
         env_logger::init().unwrap_or(());
-        quickcheck::quickcheck(check_and_gate_prop as fn(bool, bool, bool) );
+        quickcheck::quickcheck(check_and_gate_prop as fn(bool, bool, bool));
     }
 
     fn check_or_gate_prop(r: bool, a: bool, b: bool) {
@@ -555,13 +644,13 @@ mod tests {
         let rv = cnf.assert_var("r", r);
         cnf.assert_or(rv, av, bv);
 
-        assert_eq!(cnf.solve_with(), r == (a | b))
+        assert_eq!(cnf.next().is_some(), r == (a | b))
     }
 
     #[test]
     fn check_or_gate() {
         env_logger::init().unwrap_or(());
-        quickcheck::quickcheck(check_or_gate_prop as fn(bool, bool, bool) );
+        quickcheck::quickcheck(check_or_gate_prop as fn(bool, bool, bool));
     }
 
     fn check_eq_prop(r: bool, a: bool) {
@@ -570,14 +659,14 @@ mod tests {
         let rv = cnf.assert_var("r", r);
         cnf.assert_eq(rv, av);
 
-        let res = cnf.solve_with();
+        let res = cnf.next().is_some();
         assert_eq!(res, r == a)
     }
 
     #[test]
     fn check_eq() {
         env_logger::init().unwrap_or(());
-        quickcheck::quickcheck(check_eq_prop as fn(bool, bool) );
+        quickcheck::quickcheck(check_eq_prop as fn(bool, bool));
     }
 
     fn check_xor_gate_prop(r: bool, a: bool, b: bool) {
@@ -587,13 +676,13 @@ mod tests {
         let rv = cnf.assert_var("r", r);
         cnf.assert_xor(rv, av, bv);
 
-        assert_eq!(cnf.solve_with(), r == (a ^ b))
+        assert_eq!(cnf.next().is_some(), r == (a ^ b))
     }
 
     #[test]
     fn check_xor_gate() {
         env_logger::init().unwrap_or(());
-        quickcheck::quickcheck(check_xor_gate_prop as fn(bool, bool, bool) );
+        quickcheck::quickcheck(check_xor_gate_prop as fn(bool, bool, bool));
     }
 
 
@@ -601,17 +690,17 @@ mod tests {
     #[test]
     fn should_iter_examples() {
         let vars = ['a', 'b'];
-        let mut f = !vars.iter()
-                        .map(|&v| Bools::var(v))
-                        .fold(None,
-                              |acc, x| Some(acc.map(|acc| acc & x.clone()).unwrap_or(x)))
-                        .expect("formula");
+        let f = !vars.iter()
+                     .map(|&v| Bools::var(v))
+                     .fold(None,
+                           |acc, x| Some(acc.map(|acc| acc & x.clone()).unwrap_or(x)))
+                     .expect("formula");
 
         println!("Formula: {}", f);
-        let mut cnf = f.to_cnf(&btreemap![]);
+        let cnf = f.to_cnf(&btreemap![]);
 
         let mut solutions = BTreeSet::new();
-        while let Some(soln) = cnf.next_solution() {
+        for soln in cnf {
             println!("solution: {:?}", soln);
             solutions.insert(soln);
         }
