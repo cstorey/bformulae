@@ -26,6 +26,12 @@ use std::iter;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use cryptominisat::{Solver, Lit, Lbool};
+use std::clone::Clone;
+
+#[derive(Clone,Debug, Eq, PartialEq)]
+pub enum Error<T> {
+    MissingVar(T),
+}
 
 /// The core represenation of a proposition, parameterized over the variable
 /// type.
@@ -95,9 +101,9 @@ impl<V: Clone> Bools<V> {
     }
 }
 
-impl<V: Ord> Bools<V> {
+impl<V: Ord + Clone> Bools<V> {
     /// Evaluates a formula over the given variable substitutions, and returns whether the formula is true or not.
-    /// Returns None if a variable is missing from the environment.
+    /// Returns Err if a variable is missing from the environment.
     ///
     /// ```
     /// use bformulae::Bools;
@@ -106,13 +112,24 @@ impl<V: Ord> Bools<V> {
     /// let f = Bools::var("athing");
     /// let mut env = BTreeMap::new();
     /// env.insert("athing", true);
-    /// assert_eq!(f.eval(&env), Some(true));
-    /// assert_eq!((!f).eval(&env), Some(false));
+    /// assert_eq!(f.eval(&env), Ok(true));
+    /// assert_eq!((!f).eval(&env), Ok(false));
+    /// ```
+    /// ```
+    /// use bformulae::{Bools,Error};
+    /// use std::collections::BTreeMap;
+    ///
+    /// let f = Bools::var("missing variable");
+    /// let mut env = BTreeMap::new();
+    /// assert_eq!((!f).eval(&env), Err(Error::MissingVar("athing")));
     /// ```
 
-    pub fn eval(&self, env: &Env<V>) -> Option<bool> {
+
+    pub fn eval(&self, env: &Env<V>) -> Result<bool, Error<V>> {
         match self {
-            &Bools::Lit(ref id) => env.get(id).map(|x| *x),
+            &Bools::Lit(ref id) => {
+                env.get(id).map(|x| *x).map(Ok).unwrap_or_else(|| Err(Error::MissingVar((*id).clone())))
+            }
             &Bools::And(ref a, ref b) => a.eval(env).and_then(|a| b.eval(env).map(|b| a & b)),
             &Bools::Or(ref a, ref b) => a.eval(env).and_then(|a| b.eval(env).map(|b| a | b)),
             &Bools::Xor(ref a, ref b) => a.eval(env).and_then(|a| b.eval(env).map(|b| a ^ b)),
@@ -392,7 +409,7 @@ mod tests {
     extern crate quickcheck;
     extern crate rand;
     extern crate env_logger;
-    use super::{Bools, Env, CNF};
+    use super::{Bools, Env, CNF, Error};
     use self::quickcheck::{Gen, Arbitrary, TestResult};
     use std::collections::BTreeSet;
     use std::iter;
@@ -466,7 +483,7 @@ mod tests {
     }
 
     fn verify_not_prop(input: Bools<Var>, env: Env<Var>) -> bool {
-        (!input.clone()).eval(&env) == input.eval(&env).map(|r| !r)
+        (!input.clone()).eval(&env).ok() == input.eval(&env).map(|r| !r).ok()
     }
 
     #[test]
@@ -476,13 +493,13 @@ mod tests {
 
     fn verify_and_prop(left: Bools<Var>, right: Bools<Var>, env: Env<Var>) -> bool {
         trace!("verify_and_prop: {:?} & {:?} / {:?}", left, right, env);
-        let expected = if let (Some(a), Some(b)) = (left.clone().eval(&env),
-                                                    right.clone().eval(&env)) {
+        let expected = if let (Some(a), Some(b)) = (left.clone().eval(&env).ok(),
+                                                    right.clone().eval(&env).ok()) {
             Some(a & b)
         } else {
             None
         };
-        (left & right).eval(&env) == expected
+        (left & right).eval(&env).ok() == expected
     }
 
     #[test]
@@ -492,13 +509,13 @@ mod tests {
 
     fn verify_or_prop(left: Bools<Var>, right: Bools<Var>, env: Env<Var>) -> bool {
         trace!("verify_or_prop: {:?} | {:?} / {:?}", left, right, env);
-        let expected = if let (Some(a), Some(b)) = (left.clone().eval(&env),
-                                                    right.clone().eval(&env)) {
+        let expected = if let (Some(a), Some(b)) = (left.clone().eval(&env).ok(),
+                                                    right.clone().eval(&env).ok()) {
             Some(a | b)
         } else {
             None
         };
-        (left | right).eval(&env) == expected
+        (left | right).eval(&env).ok() == expected
     }
 
     #[test]
@@ -508,13 +525,13 @@ mod tests {
 
     fn verify_xor_prop(left: Bools<Var>, right: Bools<Var>, env: Env<Var>) -> bool {
         trace!("verify_and_prop: {:?} ^ {:?} / {:?}", left, right, env);
-        let expected = if let (Some(a), Some(b)) = (left.clone().eval(&env),
-                                                    right.clone().eval(&env)) {
+        let expected = if let (Some(a), Some(b)) = (left.clone().eval(&env).ok(),
+                                                    right.clone().eval(&env).ok()) {
             Some(a ^ b)
         } else {
             None
         };
-        (left ^ right).eval(&env) == expected
+        (left ^ right).eval(&env).ok() == expected
     }
 
     #[test]
@@ -524,13 +541,13 @@ mod tests {
 
     fn verify_is_prop(left: Bools<Var>, right: Bools<Var>, env: Env<Var>) -> bool {
         trace!("verify_and_prop: {:?} <-> {:?} / {:?}", left, right, env);
-        let expected = if let (Some(a), Some(b)) = (left.clone().eval(&env),
-                                                    right.clone().eval(&env)) {
+        let expected = if let (Some(a), Some(b)) = (left.clone().eval(&env).ok(),
+                                                    right.clone().eval(&env).ok()) {
             Some(a == b)
         } else {
             None
         };
-        (left.is(right)).eval(&env) == expected
+        (left.is(right)).eval(&env).ok() == expected
     }
 
     #[test]
@@ -540,14 +557,14 @@ mod tests {
 
     fn verify_implies_prop(left: Bools<Var>, right: Bools<Var>, env: Env<Var>) -> bool {
         trace!("verify_and_prop: {:?} <-> {:?} / {:?}", left, right, env);
-        let expected = if let (Some(a), Some(b)) = (left.clone().eval(&env),
-                                                    right.clone().eval(&env)) {
+        let expected = if let (Some(a), Some(b)) = (left.clone().eval(&env).ok(),
+                                                    right.clone().eval(&env).ok()) {
             Some(!a | b)
         } else {
             None
         };
         let f = left.clone().implies(right.clone());
-        let actual = f.clone().eval(&env);
+        let actual = f.clone().eval(&env).ok();
         debug!("({} -> {}) [{}] in {:?} => {:?} (expect: {:?}; okay? {})",
                left,
                right,
@@ -573,12 +590,19 @@ mod tests {
         let c = (!x1.clone() & x2.clone()) | (x1 & !x2.clone()) | (!x2 & x3);
 
         let env = btreemap!{0 => true, 1 => false, 2 => true};
-        assert_eq!(c.eval(&env), Some(true));
-        assert_eq!(c.eval(&btreemap![]), None);
+        assert_eq!(c.eval(&env), Ok(true));
+        assert!(c.eval(&btreemap![]).is_err());
     }
 
+    #[test]
+    fn should_indicate_some_missing_var() {
+        let x1 = Bools::var(0);
+        assert_eq!(x1.eval(&btreemap![]), Err(Error::MissingVar(0)));
+    }
+
+
     fn verify_cnf_prop(input: Bools<Var>, env: Env<Var>) -> TestResult {
-        if let Some(val) = input.eval(&env) {
+        if let Ok(val) = input.eval(&env) {
             let top_var = ::std::u8::MAX;
             if env.contains_key(&top_var) {
                 return TestResult::discard();
