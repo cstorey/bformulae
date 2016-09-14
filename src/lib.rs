@@ -27,10 +27,28 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use cryptominisat::{Solver, Lit, Lbool};
 use std::clone::Clone;
+use std::error;
+use std::any::Any;
 
 #[derive(Clone,Debug, Eq, PartialEq)]
 pub enum Error<T> {
     MissingVar(T),
+}
+
+impl<T: fmt::Display> fmt::Display for Error<T> {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            &Error::MissingVar(ref v) => write!(fmt, "Missing variable: {}", v),
+        }
+    }
+}
+
+impl<T: fmt::Display + fmt::Debug + Any> error::Error for Error<T> {
+    fn description(&self) -> &'static str {
+        match self {
+            &Error::MissingVar(_) => "Missing variable",
+        }
+    }
 }
 
 /// The core represenation of a proposition, parameterized over the variable
@@ -121,14 +139,17 @@ impl<V: Ord + Clone> Bools<V> {
     ///
     /// let f = Bools::var("missing variable");
     /// let mut env = BTreeMap::new();
-    /// assert_eq!((!f).eval(&env), Err(Error::MissingVar("athing")));
+    /// assert_eq!((!f).eval(&env), Err(Error::MissingVar("missing variable")));
     /// ```
 
 
     pub fn eval(&self, env: &Env<V>) -> Result<bool, Error<V>> {
         match self {
             &Bools::Lit(ref id) => {
-                env.get(id).map(|x| *x).map(Ok).unwrap_or_else(|| Err(Error::MissingVar((*id).clone())))
+                env.get(id)
+                   .map(|x| *x)
+                   .map(Ok)
+                   .unwrap_or_else(|| Err(Error::MissingVar((*id).clone())))
             }
             &Bools::And(ref a, ref b) => a.eval(env).and_then(|a| b.eval(env).map(|b| a & b)),
             &Bools::Or(ref a, ref b) => a.eval(env).and_then(|a| b.eval(env).map(|b| a | b)),
