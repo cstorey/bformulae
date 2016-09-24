@@ -82,7 +82,7 @@ pub trait Dimacs {
     fn add_clause<C: AsRef<[Self::Lit]>>(&mut self, C);
 }
 
-/// A representation of a formula encoded as CryptoMiniSat.
+/// A representation of a formula encoded as CNF
 /// Also allows iteration over solutions.
 pub struct CNF<D: Dimacs, V: Ord> {
     instance: D,
