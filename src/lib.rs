@@ -13,7 +13,7 @@
 //! fn main() {
 //!     let a = Bools::var("a");
 //!     let b = Bools::var("b");
-//!     let mut cnf = a.is(b).to_cnf(&BTreeMap::new(), Solver::new);
+//!     let mut cnf = a.is(b).to_cnf(BTreeMap::new(), Solver::new);
 //!     for soln in cnf {
 //!         println!("solution: {:?}", soln);
 //!     }
@@ -27,13 +27,15 @@ extern crate log;
 extern crate cryptominisat;
 use std::ops;
 use std::fmt;
-use std::iter;
-use std::collections::BTreeMap;
+use std::iter::{self, FromIterator};
+use std::collections::{BTreeMap, HashMap};
+use std::hash::Hash;
 use std::sync::Arc;
 use cryptominisat::Lbool;
 use std::clone::Clone;
 use std::error;
 use std::any::Any;
+use std::marker::PhantomData;
 
 #[derive(Clone,Debug, Eq, PartialEq)]
 pub enum Error<T> {
@@ -56,6 +58,10 @@ impl<T: fmt::Display + fmt::Debug + Any> error::Error for Error<T> {
     }
 }
 
+pub trait Environment<V>: FromIterator<(V, bool)> + IntoIterator<Item=(V, bool)> {
+    fn get(&self, key: &V) -> Option<bool>;
+}
+
 /// The core represenation of a proposition, parameterized over the variable
 /// type.
 #[derive(Debug,PartialOrd,Ord,PartialEq,Eq,Clone)]
@@ -69,9 +75,6 @@ pub enum Bools<V> {
     Implies(Arc<Bools<V>>, Arc<Bools<V>>),
 }
 
-/// Convenience alias for the type of environments.
-pub type Env<V> = BTreeMap<V, bool>;
-
 pub trait DimacsLit : ops ::Not<Output=Self> + Sized + fmt::Debug + Clone {
 }
 
@@ -84,13 +87,14 @@ pub trait Dimacs {
 
 /// A representation of a formula encoded as CNF
 /// Also allows iteration over solutions.
-pub struct CNF<D: Dimacs, V: Ord> {
+pub struct CNF<D: Dimacs, V: Ord, Env> {
     instance: D,
     vars: BTreeMap<V, D::Lit>,
     cache: BTreeMap<Bools<V>, D::Lit>,
+    _env: PhantomData<Env>,
 }
 
-impl<D: Dimacs, V: fmt::Debug + Ord> fmt::Debug for CNF<D, V> {
+impl<D: Dimacs, V: fmt::Debug + Ord, Env> fmt::Debug for CNF<D, V, Env> {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         fmt.debug_struct("CNF")
            .finish()
@@ -158,11 +162,10 @@ impl<V: Ord + Clone> Bools<V> {
     /// ```
 
 
-    pub fn eval(&self, env: &Env<V>) -> Result<bool, Error<V>> {
+    pub fn eval<Env: Environment<V>>(&self, env: &Env) -> Result<bool, Error<V>> {
         match self {
             &Bools::Lit(ref id) => {
                 env.get(id)
-                   .map(|x| *x)
                    .map(Ok)
                    .unwrap_or_else(|| Err(Error::MissingVar((*id).clone())))
             }
@@ -202,12 +205,13 @@ fn lbool_as_optbool(l: Lbool) -> Option<bool> {
     }
 }
 
-impl<D: Dimacs, V: Ord + Clone> CNF<D, V> {
-    fn new<F: FnMut() -> D>(mut f: F) -> CNF<D, V> {
+impl<D: Dimacs, V: Ord + Clone, Env> CNF<D, V, Env> {
+    fn new<F: FnMut() -> D>(mut f: F) -> CNF<D, V, Env> {
         CNF {
             instance: f(),
             vars: BTreeMap::new(),
             cache: BTreeMap::new(),
+            _env: PhantomData,
         }
     }
 
@@ -268,7 +272,7 @@ impl<D: Dimacs, V: Ord + Clone> CNF<D, V> {
     }
 }
 
-impl<V: Ord + Clone> CNF<cryptominisat::Solver, V> {
+impl<V: Ord + Clone, Env> CNF<cryptominisat::Solver, V, Env> {
     // FIXME: Return type.
     fn solve_with(&mut self) -> bool {
         let ret = lbool_as_optbool(self.instance.solve());
@@ -284,10 +288,10 @@ impl<V: Ord + Clone> CNF<cryptominisat::Solver, V> {
     }
 }
 
-impl<V: Ord + Clone> iter::Iterator for CNF<cryptominisat::Solver, V> {
-    type Item = Env<V>;
+impl<V: Ord + Clone, Env: Environment<V>> iter::Iterator for CNF<cryptominisat::Solver, V, Env> {
+    type Item = Env;
 
-    fn next(&mut self) -> Option<Env<V>> {
+    fn next(&mut self) -> Option<Env> {
         if self.solve_with() {
             let clause = self.vars
                              .values()
@@ -330,21 +334,24 @@ impl<V: Ord + Clone + fmt::Debug> Bools<V> {
     ///     let f = Bools::var("athing");
     ///     let mut env = BTreeMap::new();
     ///     env.insert("athing", true);
-    ///     let cnf = f.to_cnf(&env, Solver::new);
+    ///     let cnf = f.to_cnf(env, Solver::new);
     /// }
     /// ```
 
-    pub fn to_cnf<D: Dimacs, F: FnMut() -> D>(&self, env: &Env<V>, builder: F) -> CNF<D, V> {
+    pub fn to_cnf<D: Dimacs, Env: Environment<V>, F: FnMut() -> D>(&self,
+                                                                   env: Env,
+                                                                   builder: F)
+                                                                   -> CNF<D, V, Env> {
         let mut cnf = CNF::new(builder);
-        for (k, v) in env.iter() {
-            cnf.assert_var(k.clone(), *v);
+        for (k, v) in env.into_iter() {
+            cnf.assert_var(k.clone(), v);
         }
         let top = self.to_cnf_inner(&mut cnf);
         cnf.assert([top]);
         cnf
     }
 
-    fn to_cnf_inner<D: Dimacs>(&self, cnf: &mut CNF<D, V>) -> D::Lit {
+    fn to_cnf_inner<D: Dimacs, Env>(&self, cnf: &mut CNF<D, V, Env>) -> D::Lit {
         if cnf.cache.contains_key(self) {
             let ref val = cnf.cache[self];
             debug!("subclause(cached): {:?} => {:?}", self, val);
@@ -467,14 +474,27 @@ impl Dimacs for cryptominisat::Solver {
     }
 }
 
+impl<V: Ord> Environment<V> for BTreeMap<V, bool> {
+    fn get(&self, var: &V) -> Option<bool> {
+        BTreeMap::get(self, var).map(Clone::clone)
+    }
+}
+
+impl<V: Hash + Eq> Environment<V> for HashMap<V, bool> {
+    fn get(&self, var: &V) -> Option<bool> {
+        HashMap::get(self, var).map(Clone::clone)
+    }
+}
+
+
 #[cfg(test)]
 mod tests {
     extern crate quickcheck;
     extern crate rand;
     extern crate env_logger;
-    use super::{Bools, Env, CNF, Error};
+    use super::{Bools, CNF, Error};
     use self::quickcheck::{Gen, Arbitrary, TestResult};
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeSet, BTreeMap};
     use std::iter;
     use std::sync::Arc;
     use cryptominisat;
@@ -546,16 +566,16 @@ mod tests {
         }
     }
 
-    fn verify_not_prop(input: Bools<Var>, env: Env<Var>) -> bool {
+    fn verify_not_prop(input: Bools<Var>, env: BTreeMap<Var, bool>) -> bool {
         (!input.clone()).eval(&env).ok() == input.eval(&env).map(|r| !r).ok()
     }
 
     #[test]
     fn verify_not() {
-        quickcheck::quickcheck(verify_not_prop as fn(Bools<Var>, Env<Var>) -> bool);
+        quickcheck::quickcheck(verify_not_prop as fn(Bools<Var>, BTreeMap<Var, bool>) -> bool);
     }
 
-    fn verify_and_prop(left: Bools<Var>, right: Bools<Var>, env: Env<Var>) -> bool {
+    fn verify_and_prop(left: Bools<Var>, right: Bools<Var>, env: BTreeMap<Var, bool>) -> bool {
         trace!("verify_and_prop: {:?} & {:?} / {:?}", left, right, env);
         let expected = if let (Some(a), Some(b)) = (left.clone().eval(&env).ok(),
                                                     right.clone().eval(&env).ok()) {
@@ -568,10 +588,11 @@ mod tests {
 
     #[test]
     fn verify_and() {
-        quickcheck::quickcheck(verify_and_prop as fn(Bools<Var>, Bools<Var>, Env<Var>) -> bool);
+        quickcheck::quickcheck(verify_and_prop as fn(Bools<Var>, Bools<Var>, BTreeMap<Var, bool>)
+                                                     -> bool);
     }
 
-    fn verify_or_prop(left: Bools<Var>, right: Bools<Var>, env: Env<Var>) -> bool {
+    fn verify_or_prop(left: Bools<Var>, right: Bools<Var>, env: BTreeMap<Var, bool>) -> bool {
         trace!("verify_or_prop: {:?} | {:?} / {:?}", left, right, env);
         let expected = if let (Some(a), Some(b)) = (left.clone().eval(&env).ok(),
                                                     right.clone().eval(&env).ok()) {
@@ -584,10 +605,11 @@ mod tests {
 
     #[test]
     fn verify_or() {
-        quickcheck::quickcheck(verify_or_prop as fn(Bools<Var>, Bools<Var>, Env<Var>) -> bool);
+        quickcheck::quickcheck(verify_or_prop as fn(Bools<Var>, Bools<Var>, BTreeMap<Var, bool>)
+                                                    -> bool);
     }
 
-    fn verify_xor_prop(left: Bools<Var>, right: Bools<Var>, env: Env<Var>) -> bool {
+    fn verify_xor_prop(left: Bools<Var>, right: Bools<Var>, env: BTreeMap<Var, bool>) -> bool {
         trace!("verify_and_prop: {:?} ^ {:?} / {:?}", left, right, env);
         let expected = if let (Some(a), Some(b)) = (left.clone().eval(&env).ok(),
                                                     right.clone().eval(&env).ok()) {
@@ -600,10 +622,11 @@ mod tests {
 
     #[test]
     fn verify_xor() {
-        quickcheck::quickcheck(verify_xor_prop as fn(Bools<Var>, Bools<Var>, Env<Var>) -> bool);
+        quickcheck::quickcheck(verify_xor_prop as fn(Bools<Var>, Bools<Var>, BTreeMap<Var, bool>)
+                                                     -> bool);
     }
 
-    fn verify_is_prop(left: Bools<Var>, right: Bools<Var>, env: Env<Var>) -> bool {
+    fn verify_is_prop(left: Bools<Var>, right: Bools<Var>, env: BTreeMap<Var, bool>) -> bool {
         trace!("verify_and_prop: {:?} <-> {:?} / {:?}", left, right, env);
         let expected = if let (Some(a), Some(b)) = (left.clone().eval(&env).ok(),
                                                     right.clone().eval(&env).ok()) {
@@ -616,10 +639,11 @@ mod tests {
 
     #[test]
     fn verify_is() {
-        quickcheck::quickcheck(verify_is_prop as fn(Bools<Var>, Bools<Var>, Env<Var>) -> bool);
+        quickcheck::quickcheck(verify_is_prop as fn(Bools<Var>, Bools<Var>, BTreeMap<Var, bool>)
+                                                    -> bool);
     }
 
-    fn verify_implies_prop(left: Bools<Var>, right: Bools<Var>, env: Env<Var>) -> bool {
+    fn verify_implies_prop(left: Bools<Var>, right: Bools<Var>, env: BTreeMap<Var, bool>) -> bool {
         trace!("verify_and_prop: {:?} <-> {:?} / {:?}", left, right, env);
         let expected = if let (Some(a), Some(b)) = (left.clone().eval(&env).ok(),
                                                     right.clone().eval(&env).ok()) {
@@ -642,7 +666,10 @@ mod tests {
 
     #[test]
     fn verify_implies() {
-        quickcheck::quickcheck(verify_implies_prop as fn(Bools<Var>, Bools<Var>, Env<Var>) -> bool);
+        quickcheck::quickcheck(verify_implies_prop as fn(Bools<Var>,
+                                                         Bools<Var>,
+                                                         BTreeMap<Var, bool>)
+                                                         -> bool);
     }
 
 
@@ -665,7 +692,7 @@ mod tests {
     }
 
 
-    fn verify_cnf_prop(input: Bools<Var>, env: Env<Var>) -> TestResult {
+    fn verify_cnf_prop(input: Bools<Var>, env: BTreeMap<Var, bool>) -> TestResult {
         if let Ok(val) = input.eval(&env) {
             let top_var = ::std::u8::MAX;
             if env.contains_key(&top_var) {
@@ -677,12 +704,12 @@ mod tests {
             let satisfiable = Bools::var(top_var).is(input.clone());
             info!("{:?} <-> {:?} => {:?}", top_var, input, satisfiable);
 
-            let cnf = satisfiable.to_cnf(&env, cryptominisat::Solver::new);
+            let cnf = satisfiable.to_cnf(env.clone(), cryptominisat::Solver::new);
             for soln in cnf {
                 info!("solution: {:?}", soln);
             }
 
-            let cnf = satisfiable.to_cnf(&env, cryptominisat::Solver::new);
+            let cnf = satisfiable.to_cnf(env.clone(), cryptominisat::Solver::new);
 
             let mut solutions = BTreeSet::new();
             for soln in cnf {
@@ -706,7 +733,7 @@ mod tests {
     #[test]
     fn verify_cnf() {
         env_logger::init().unwrap_or(());
-        quickcheck::quickcheck(verify_cnf_prop as fn(Bools<Var>, Env<Var>) -> TestResult);
+        quickcheck::quickcheck(verify_cnf_prop as fn(Bools<Var>, BTreeMap<Var, bool>) -> TestResult);
     }
 
     fn check_and_gate_prop(r: bool, a: bool, b: bool) {
@@ -716,7 +743,8 @@ mod tests {
         let rv = cnf.assert_var("r", r);
         cnf.assert_and(rv, av, bv);
 
-        assert_eq!(cnf.next().is_some(), r == (a & b))
+        let next: Option<BTreeMap<&str, bool>> = cnf.next();
+        assert_eq!(next.is_some(), r == (a & b))
     }
 
     #[test]
@@ -732,7 +760,8 @@ mod tests {
         let rv = cnf.assert_var("r", r);
         cnf.assert_or(rv, av, bv);
 
-        assert_eq!(cnf.next().is_some(), r == (a | b))
+        let next: Option<BTreeMap<&str, bool>> = cnf.next();
+        assert_eq!(next.is_some(), r == (a | b))
     }
 
     #[test]
@@ -747,8 +776,8 @@ mod tests {
         let rv = cnf.assert_var("r", r);
         cnf.assert_eq(rv, av);
 
-        let res = cnf.next().is_some();
-        assert_eq!(res, r == a)
+        let next: Option<BTreeMap<&str, bool>> = cnf.next();
+        assert_eq!(next.is_some(), r == a)
     }
 
     #[test]
@@ -764,7 +793,8 @@ mod tests {
         let rv = cnf.assert_var("r", r);
         cnf.assert_xor(rv, av, bv);
 
-        assert_eq!(cnf.next().is_some(), r == (a ^ b))
+        let next: Option<BTreeMap<&str, bool>> = cnf.next();
+        assert_eq!(next.is_some(), r == (a ^ b))
     }
 
     #[test]
@@ -785,7 +815,7 @@ mod tests {
                      .expect("formula");
 
         println!("Formula: {}", f);
-        let cnf = f.to_cnf(&btreemap![], cryptominisat::Solver::new);
+        let cnf = f.to_cnf(btreemap![], cryptominisat::Solver::new);
 
         let mut solutions = BTreeSet::new();
         for soln in cnf {
