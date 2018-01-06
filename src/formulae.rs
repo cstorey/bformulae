@@ -62,9 +62,9 @@ pub trait Dimacs {
 /// A representation of a formula encoded as CNF
 /// Also allows iteration over solutions.
 pub struct CNF<D: Dimacs, V: Ord, Env> {
-    instance: D,
-    vars: BTreeMap<V, D::Lit>,
-    cache: BTreeMap<Bools<V>, D::Lit>,
+    pub(crate) instance: D,
+    pub(crate) vars: BTreeMap<V, D::Lit>,
+    pub(crate) cache: BTreeMap<Bools<V>, D::Lit>,
     _env: PhantomData<Env>,
 }
 
@@ -171,7 +171,7 @@ impl<V: fmt::Display> fmt::Display for Bools<V> {
 
 
 
-fn lbool_as_optbool(l: Lbool) -> Option<bool> {
+pub(crate) fn lbool_as_optbool(l: Lbool) -> Option<bool> {
     match l {
         Lbool::True => Some(true),
         Lbool::False => Some(false),
@@ -179,8 +179,8 @@ fn lbool_as_optbool(l: Lbool) -> Option<bool> {
     }
 }
 
-impl<D: Dimacs, V: Ord + Clone, Env> CNF<D, V, Env> {
-    fn new<F: FnMut() -> D>(mut f: F) -> CNF<D, V, Env> {
+impl<D: Dimacs, V: Ord + Clone + fmt::Debug, Env> CNF<D, V, Env> {
+    pub(crate) fn new<F: FnMut() -> D>(mut f: F) -> CNF<D, V, Env> {
         CNF {
             instance: f(),
             vars: BTreeMap::new(),
@@ -189,19 +189,20 @@ impl<D: Dimacs, V: Ord + Clone, Env> CNF<D, V, Env> {
         }
     }
 
-    fn assert_var(&mut self, var: V, val: bool) -> D::Lit {
+    pub(crate) fn assert_var(&mut self, var: V, val: bool) -> D::Lit {
         let var = self.var(var);
         let clause = [if val {
                           var.clone()
                       } else {
                           !var.clone()
                       }];
+        debug!("assert_var {:?} := {:?}", var, val);
         self.assert(clause);
         var
     }
 
-    fn assert<A: AsRef<[D::Lit]>>(&mut self, s: A) {
-        debug!("cnf: {}",
+    pub(crate) fn assert<A: AsRef<[D::Lit]>>(&mut self, s: A) {
+        debug!("assert cnf clause: {}",
                s.as_ref()
                 .iter()
                 .map(|l| format!("{:?}", l))
@@ -209,27 +210,27 @@ impl<D: Dimacs, V: Ord + Clone, Env> CNF<D, V, Env> {
                 .join(" "));
         self.instance.add_clause(s);
     }
-    fn assert_eq(&mut self, a: D::Lit, b: D::Lit) {
-        debug!("assert! {:?} <-> {:?}", a, b);
+    pub(crate) fn assert_eq(&mut self, a: D::Lit, b: D::Lit) {
+        debug!("assert_eq: {:?} ⇔ {:?}", a, b);
         self.assert([!a.clone(), b.clone()]);
         self.assert([a, !b]);
     }
 
-    fn assert_and(&mut self, it: D::Lit, l: D::Lit, r: D::Lit) {
-        debug!("assert! {:?} <-> {:?} /\\ {:?}", it, l, r);
+    pub(crate) fn assert_and(&mut self, it: D::Lit, l: D::Lit, r: D::Lit) {
+        debug!("assert_and: {:?} ⇔ {:?} ∧ {:?}", it, l, r);
         self.assert([!l.clone(), !r.clone(), it.clone()]);
         self.assert([l, !it.clone()]);
         self.assert([r, !it]);
     }
-    fn assert_or(&mut self, it: D::Lit, l: D::Lit, r: D::Lit) {
-        debug!("assert! {:?} <-> {:?} \\/ {:?}", it, l, r);
+    pub(crate) fn assert_or(&mut self, it: D::Lit, l: D::Lit, r: D::Lit) {
+        debug!("assert_or: {:?} ⇔ {:?} ∨ {:?}", it, l, r);
         self.assert([l.clone(), r.clone(), !it.clone()]);
         self.assert([!l, it.clone()]);
         self.assert([!r, it]);
     }
 
-    fn assert_xor(&mut self, it: D::Lit, l: D::Lit, r: D::Lit) {
-        debug!("assert! {:?} <-> {:?} ^ {:?}", it, l, r);
+    pub(crate) fn assert_xor(&mut self, it: D::Lit, l: D::Lit, r: D::Lit) {
+        debug!("assert_xor: {:?} ⇔ {:?} ^ {:?}", it, l, r);
         // IT = L ^ R
         // (!L | !R | !IT) & (L|R|!IT) & (L|!R|IT) & (!L|R|IT)
         self.assert([!l.clone(), !r.clone(), !it.clone()]);
@@ -241,14 +242,14 @@ impl<D: Dimacs, V: Ord + Clone, Env> CNF<D, V, Env> {
     fn var(&mut self, var: V) -> D::Lit {
         let &mut CNF { ref mut instance, ref mut vars, .. } = self;
         let res = vars.entry(var.clone()).or_insert_with(|| instance.new_var());
-        debug!("var: {:?}", res);
+        trace!("var {:?}: {:?}", var, res);
         res.clone()
     }
 }
 
 impl<V: Ord + Clone, Env> CNF<cryptominisat::Solver, V, Env> {
     // FIXME: Return type.
-    fn solve_with(&mut self) -> bool {
+    pub(crate) fn solve_with(&mut self) -> bool {
         let ret = lbool_as_optbool(self.instance.solve());
         debug!("Solution assignments: {:?}",
                self.instance
@@ -601,7 +602,7 @@ mod tests {
     }
 
     fn verify_is_prop(left: Bools<Var>, right: Bools<Var>, env: BTreeMap<Var, bool>) -> bool {
-        trace!("verify_and_prop: {:?} <-> {:?} / {:?}", left, right, env);
+        trace!("verify_and_prop: {:?} ⇔ {:?} / {:?}", left, right, env);
         let expected = if let (Some(a), Some(b)) = (left.clone().eval(&env).ok(),
                                                     right.clone().eval(&env).ok()) {
             Some(a == b)
@@ -618,7 +619,7 @@ mod tests {
     }
 
     fn verify_implies_prop(left: Bools<Var>, right: Bools<Var>, env: BTreeMap<Var, bool>) -> bool {
-        trace!("verify_and_prop: {:?} <-> {:?} / {:?}", left, right, env);
+        trace!("verify_and_prop: {:?} ⇔ {:?} / {:?}", left, right, env);
         let expected = if let (Some(a), Some(b)) = (left.clone().eval(&env).ok(),
                                                     right.clone().eval(&env).ok()) {
             Some(!a | b)
@@ -676,7 +677,7 @@ mod tests {
             info!("verify_cnf_prop: {} / {:?} => {:?}", input, env, val);
 
             let satisfiable = Bools::var(top_var).is(input.clone());
-            info!("{:?} <-> {:?} => {:?}", top_var, input, satisfiable);
+            info!("{:?} ⇔ {:?} => {:?}", top_var, input, satisfiable);
 
             let cnf = satisfiable.to_cnf(env.clone(), cryptominisat::Solver::new);
             for soln in cnf {

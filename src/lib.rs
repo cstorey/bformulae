@@ -28,5 +28,6 @@ extern crate log;
 extern crate cryptominisat;
 
 mod formulae;
+mod dpll;
 
 pub use formulae::*;
